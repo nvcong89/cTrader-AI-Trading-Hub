@@ -265,7 +265,7 @@ export default function Dashboard() {
       case 'positions':
         return <ActivePositionsTab isGuest={isGuest} />;
       case 'bots':
-        return <BotManagerTab data={data} refreshData={fetchData} isGuest={isGuest} />;
+        return <BotManagerTab data={data} refreshData={fetchData} isGuest={isGuest} onNavigateToAccounts={() => handleTabChange('accounts')} />;
       case 'agent':
         return <AgentTab isGuest={isGuest} />;
       case 'benchmark':

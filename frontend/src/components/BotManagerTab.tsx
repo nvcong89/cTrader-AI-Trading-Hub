@@ -78,9 +78,10 @@ interface BotManagerTabProps {
   data: any;
   refreshData: () => void;
   isGuest?: boolean;
+  onNavigateToAccounts?: () => void;
 }
 
-export default function BotManagerTab({ data, refreshData, isGuest = false }: BotManagerTabProps) {
+export default function BotManagerTab({ data, refreshData, isGuest = false, onNavigateToAccounts }: BotManagerTabProps) {
   const [cbots, setCbots] = useState<CBotItem[]>(data?.available_cbots || []);
   const [accounts, setAccounts] = useState<AccountItem[]>(data?.accounts || []);
   const [selectedBotId, setSelectedBotId] = useState<number | null>(null);
@@ -559,17 +560,37 @@ export default function BotManagerTab({ data, refreshData, isGuest = false }: Bo
     };
   }, []);
 
+  // Helper for generating smart, consistent Bot Instance names
+  const generateBotInstanceName = (baseName: string, accountId?: string, symbol?: string, timeframe?: string): string => {
+    const cleanBase = (baseName || 'cBot')
+      .replace(/\s*\[.*?\]\s*$/, '')
+      .replace(/\s*-\s*[A-Z0-9]+$/i, '')
+      .trim();
+    const parts: string[] = [];
+    if (accountId) parts.push(`#${accountId}`);
+    if (symbol) {
+      const tfStr = (timeframe || 'm15').toUpperCase();
+      parts.push(`${symbol} ${tfStr}`);
+    }
+    return parts.length > 0 ? `${cleanBase} [${parts.join(' - ')}]` : cleanBase;
+  };
+
   // Quick Open Deploy Modal from Catalog
   const handleDeployCbot = (cbot: CBotItem) => {
-    const defaultAcc = accounts[0];
+    const defaultAcc = accounts.length > 0 ? accounts[0] : null;
+    const isLive = defaultAcc ? (defaultAcc.account_type || '').toLowerCase() === 'live' : false;
+    const cleanCbotName = cbot.name.replace(/[^a-zA-Z0-9 _-]/g, '').trim();
+    const sym = cbot.symbol_hint || 'XAUUSD';
+    const tf = cbot.timeframe_hint || 'm15';
+
     setDeployForm({
-      name: `${cbot.name.replace(/[^a-zA-Z0-9 ]/g, '')} - ${cbot.symbol_hint}`,
+      name: generateBotInstanceName(cleanCbotName, defaultAcc?.account_id, sym, tf),
       algo_path: cbot.filename,
-      account_id: defaultAcc ? defaultAcc.account_id : '',
-      account_label: defaultAcc ? defaultAcc.account_label || `Account #${defaultAcc.account_id}` : 'Demo Scalper',
-      account_type: defaultAcc ? defaultAcc.account_type || 'demo' : 'demo',
-      symbol: cbot.symbol_hint || 'XAUUSD',
-      timeframe: cbot.timeframe_hint || 'm15',
+      account_id: defaultAcc ? String(defaultAcc.account_id) : '',
+      account_label: defaultAcc ? defaultAcc.account_label || `Account #${defaultAcc.account_id}` : 'Main Account',
+      account_type: isLive ? 'live' : 'demo',
+      symbol: sym,
+      timeframe: tf,
       ctid_email: '',
       ctid_password: '',
       auto_start: true
@@ -1275,6 +1296,20 @@ export default function BotManagerTab({ data, refreshData, isGuest = false }: Bo
               if (cbots.length > 0) {
                 handleDeployCbot(cbots[0]);
               } else {
+                const defaultAcc = accounts.length > 0 ? accounts[0] : null;
+                const isLive = defaultAcc ? (defaultAcc.account_type || '').toLowerCase() === 'live' : false;
+                setDeployForm({
+                  name: generateBotInstanceName('cBot Instance', defaultAcc?.account_id, 'XAUUSD', 'm15'),
+                  algo_path: '',
+                  account_id: defaultAcc ? String(defaultAcc.account_id) : '',
+                  account_label: defaultAcc ? defaultAcc.account_label || `Account #${defaultAcc.account_id}` : 'Main Account',
+                  account_type: isLive ? 'live' : 'demo',
+                  symbol: 'XAUUSD',
+                  timeframe: 'm15',
+                  ctid_email: '',
+                  ctid_password: '',
+                  auto_start: true
+                });
                 setIsDeployModalOpen(true);
               }
             }}
@@ -2223,12 +2258,12 @@ export default function BotManagerTab({ data, refreshData, isGuest = false }: Bo
               {/* Instance Name */}
               <div>
                 <label style={{ display: 'block', fontSize: '0.825rem', fontWeight: 600, color: '#cbd5e1', marginBottom: '0.4rem' }}>
-                  Instance Name / Alias
+                  Tên Bot Instance (Instance Name) <span style={{ color: '#ef4444' }}>*</span>
                 </label>
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Smart Trend XAU M15 - Alpha"
+                  placeholder="e.g. Smart Trend Bot Pro [#384729 - XAUUSD M15]"
                   value={deployForm.name}
                   onChange={(e) => setDeployForm({ ...deployForm, name: e.target.value })}
                   style={{
@@ -2242,17 +2277,33 @@ export default function BotManagerTab({ data, refreshData, isGuest = false }: Bo
                     boxSizing: 'border-box'
                   }}
                 />
+                <div style={{ marginTop: '0.25rem', fontSize: '0.725rem', color: '#64748b' }}>
+                  💡 Tên định danh bot hiển thị trên bảng điều khiển. Bạn có thể tự do đặt tên theo ý muốn.
+                </div>
               </div>
 
               {/* cBot Package Selector */}
               <div>
                 <label style={{ display: 'block', fontSize: '0.825rem', fontWeight: 600, color: '#cbd5e1', marginBottom: '0.4rem' }}>
-                  Select cBot Algo Package (from <code>/cbot</code>)
+                  Chiến thuật cBot Package (từ thư mục <code>/cbot</code>) <span style={{ color: '#ef4444' }}>*</span>
                 </label>
                 <select
                   required
                   value={deployForm.algo_path}
-                  onChange={(e) => setDeployForm({ ...deployForm, algo_path: e.target.value })}
+                  onChange={(e) => {
+                    const newAlgo = e.target.value;
+                    const cbotObj = cbots.find(c => c.filename === newAlgo);
+                    const cleanCbot = cbotObj?.name || newAlgo;
+                    const sym = cbotObj?.symbol_hint || deployForm.symbol;
+                    const tf = cbotObj?.timeframe_hint || deployForm.timeframe;
+                    setDeployForm(prev => ({
+                      ...prev,
+                      algo_path: newAlgo,
+                      symbol: sym,
+                      timeframe: tf,
+                      name: generateBotInstanceName(cleanCbot, prev.account_id, sym, tf)
+                    }));
+                  }}
                   style={{
                     width: '100%',
                     padding: '0.65rem 0.85rem',
@@ -2264,7 +2315,7 @@ export default function BotManagerTab({ data, refreshData, isGuest = false }: Bo
                     boxSizing: 'border-box'
                   }}
                 >
-                  <option value="">-- Choose a cBot file --</option>
+                  <option value="">-- Chọn file cBot thuật toán --</option>
                   {cbots.map((c, i) => (
                     <option key={i} value={c.filename}>
                       {c.name} ({c.filename})
@@ -2273,123 +2324,205 @@ export default function BotManagerTab({ data, refreshData, isGuest = false }: Bo
                 </select>
               </div>
 
-              {/* Account Selection / Quick Pre-fill */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.825rem', fontWeight: 600, color: '#cbd5e1', marginBottom: '0.4rem' }}>
-                    Account Number
+              {/* Account Selection from Account Manager */}
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                  <label style={{ fontSize: '0.825rem', fontWeight: 600, color: '#cbd5e1', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <Wallet size={15} color="#38bdf8" /> Tài khoản Giao dịch (Connected cTrader Account) <span style={{ color: '#ef4444' }}>*</span>
                   </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. 1234567"
-                    value={deployForm.account_id}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      const matched = accounts.find((a) => String(a.account_id) === val.trim());
-                      if (matched) {
-                        setDeployForm({
-                          ...deployForm,
-                          account_id: val,
-                          account_label: matched.account_label || `Account #${matched.account_id}`,
-                          account_type: (matched.account_type || 'demo').toLowerCase()
-                        });
-                      } else {
-                        setDeployForm({ ...deployForm, account_id: val });
-                      }
-                    }}
-                    style={{
-                      width: '100%',
-                      padding: '0.65rem 0.85rem',
-                      background: '#0f172a',
-                      border: '1px solid #334155',
-                      borderRadius: '6px',
-                      color: 'white',
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: '0.9rem',
-                      boxSizing: 'border-box'
-                    }}
-                  />
-                  {accounts.length > 0 && (
-                    <div style={{ marginTop: '0.35rem', display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
-                      {accounts.map((acc) => {
-                        const isAccLive = (acc.account_type || '').toLowerCase() === 'live';
-                        return (
-                          <button
-                            type="button"
-                            key={acc.account_id}
-                            title={acc.account_label ? `${acc.account_label} (#${acc.account_id})` : `#${acc.account_id}`}
-                            onClick={() => {
-                              setDeployForm({
-                                ...deployForm,
-                                account_id: acc.account_id,
-                                account_label: acc.account_label || `Account #${acc.account_id}`,
-                                account_type: isAccLive ? 'live' : 'demo',
-                                ctid_email: acc.ctid_email || deployForm.ctid_email
-                              });
-                            }}
-                            style={{
-                              background: isAccLive ? 'rgba(245, 158, 11, 0.15)' : 'rgba(56, 189, 248, 0.15)',
-                              border: isAccLive ? '1px solid rgba(245, 158, 11, 0.35)' : '1px solid rgba(56, 189, 248, 0.35)',
-                              color: isAccLive ? '#fbbf24' : '#38bdf8',
-                              fontSize: '0.7rem',
-                              padding: '0.2rem 0.45rem',
-                              borderRadius: '4px',
-                              cursor: 'pointer',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: '0.3rem',
-                              fontWeight: 600
-                            }}
-                          >
-                            <span style={{ fontSize: '0.65rem', padding: '0.05rem 0.25rem', borderRadius: '3px', background: isAccLive ? 'rgba(245, 158, 11, 0.25)' : 'rgba(56, 189, 248, 0.25)' }}>
-                              {isAccLive ? 'LIVE' : 'DEMO'}
-                            </span>
-                            {acc.broker && (
-                              <span style={{ fontSize: '0.65rem', padding: '0.05rem 0.25rem', borderRadius: '3px', background: 'rgba(255, 255, 255, 0.12)', color: '#cbd5e1' }}>
-                                {acc.broker}
-                              </span>
-                            )}
-                            {acc.account_id} {acc.equity ? `($${acc.equity.toFixed(2)})` : ''}
-                          </button>
-                        );
-                      })}
-                    </div>
+                  {onNavigateToAccounts && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsDeployModalOpen(false);
+                        onNavigateToAccounts();
+                      }}
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        color: '#38bdf8',
+                        fontSize: '0.75rem',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.25rem',
+                        padding: 0
+                      }}
+                    >
+                      <Sliders size={12} /> Quản lý tài khoản
+                    </button>
                   )}
                 </div>
 
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.825rem', fontWeight: 600, color: '#cbd5e1', marginBottom: '0.4rem' }}>
-                    Tên Tài Khoản (Account Alias)
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Scalping Demo 10k"
-                    value={deployForm.account_label}
-                    onChange={(e) => setDeployForm({ ...deployForm, account_label: e.target.value })}
-                    style={{
-                      width: '100%',
-                      padding: '0.65rem 0.85rem',
-                      background: '#0f172a',
-                      border: '1px solid #334155',
-                      borderRadius: '6px',
-                      color: 'white',
-                      fontSize: '0.9rem',
-                      boxSizing: 'border-box'
-                    }}
-                  />
-                </div>
+                {accounts.length === 0 ? (
+                  <div style={{
+                    background: 'rgba(239, 68, 68, 0.1)',
+                    border: '1px solid rgba(239, 68, 68, 0.3)',
+                    borderRadius: '8px',
+                    padding: '0.85rem 1rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '1rem'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fca5a5', fontSize: '0.825rem' }}>
+                      <AlertCircle size={18} />
+                      <span>Chưa có tài khoản cTrader nào được cấu hình trong hệ thống.</span>
+                    </div>
+                    {onNavigateToAccounts && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsDeployModalOpen(false);
+                          onNavigateToAccounts();
+                        }}
+                        style={{
+                          background: '#0284c7',
+                          border: 'none',
+                          color: 'white',
+                          fontSize: '0.75rem',
+                          padding: '0.35rem 0.75rem',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          fontWeight: 600,
+                          whiteSpace: 'nowrap'
+                        }}
+                      >
+                        + Thêm tài khoản
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    <select
+                      required
+                      value={deployForm.account_id}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        const matched = accounts.find((a) => String(a.account_id) === val);
+                        if (matched) {
+                          const isLive = (matched.account_type || '').toLowerCase() === 'live';
+                          const cleanCbot = cbots.find(c => c.filename === deployForm.algo_path)?.name || deployForm.name;
+                          setDeployForm(prev => ({
+                            ...prev,
+                            account_id: String(matched.account_id),
+                            account_label: matched.account_label || `Account #${matched.account_id}`,
+                            account_type: isLive ? 'live' : 'demo',
+                            name: generateBotInstanceName(cleanCbot, matched.account_id, prev.symbol, prev.timeframe)
+                          }));
+                        } else {
+                          setDeployForm(prev => ({ ...prev, account_id: val }));
+                        }
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '0.65rem 0.85rem',
+                        background: '#0f172a',
+                        border: '1px solid #334155',
+                        borderRadius: '6px',
+                        color: 'white',
+                        fontSize: '0.9rem',
+                        boxSizing: 'border-box'
+                      }}
+                    >
+                      <option value="" disabled>-- Chọn tài khoản cTrader để chạy bot --</option>
+                      {accounts.filter(a => (a.account_type || '').toLowerCase() === 'live').length > 0 && (
+                        <optgroup label="🟢 TÀI KHOẢN LIVE / REAL">
+                          {accounts.filter(a => (a.account_type || '').toLowerCase() === 'live').map((acc) => (
+                            <option key={acc.account_id} value={acc.account_id}>
+                              🟢 [LIVE] {acc.broker ? `${acc.broker} ` : ''}#{acc.account_id} {acc.account_label ? `— ${acc.account_label}` : ''} {acc.equity ? `(Equity: $${acc.equity.toLocaleString()})` : ''}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {accounts.filter(a => (a.account_type || '').toLowerCase() !== 'live').length > 0 && (
+                        <optgroup label="🔵 TÀI KHOẢN DEMO">
+                          {accounts.filter(a => (a.account_type || '').toLowerCase() !== 'live').map((acc) => (
+                            <option key={acc.account_id} value={acc.account_id}>
+                              🔵 [DEMO] {acc.broker ? `${acc.broker} ` : ''}#{acc.account_id} {acc.account_label ? `— ${acc.account_label}` : ''} {acc.equity ? `(Equity: $${acc.equity.toLocaleString()})` : ''}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                    </select>
+
+                    {/* Selected Account Summary Card */}
+                    {(() => {
+                      const selectedAcc = accounts.find(a => String(a.account_id) === String(deployForm.account_id));
+                      if (!selectedAcc) return null;
+                      const isLive = (selectedAcc.account_type || '').toLowerCase() === 'live';
+                      return (
+                        <div style={{
+                          marginTop: '0.6rem',
+                          padding: '0.75rem 1rem',
+                          background: 'rgba(15, 23, 42, 0.75)',
+                          border: `1px solid ${isLive ? 'rgba(245, 158, 11, 0.4)' : 'rgba(56, 189, 248, 0.4)'}`,
+                          borderRadius: '8px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '0.45rem'
+                        }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                              <span style={{
+                                fontSize: '0.7rem',
+                                fontWeight: 800,
+                                padding: '0.15rem 0.45rem',
+                                borderRadius: '4px',
+                                background: isLive ? 'rgba(245, 158, 11, 0.2)' : 'rgba(56, 189, 248, 0.2)',
+                                color: isLive ? '#fbbf24' : '#38bdf8',
+                                border: `1px solid ${isLive ? 'rgba(245, 158, 11, 0.4)' : 'rgba(56, 189, 248, 0.4)'}`
+                              }}>
+                                {isLive ? 'LIVE' : 'DEMO'}
+                              </span>
+                              {selectedAcc.broker && (
+                                <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#cbd5e1', background: '#334155', padding: '0.1rem 0.45rem', borderRadius: '4px' }}>
+                                  {selectedAcc.broker}
+                                </span>
+                              )}
+                              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', fontWeight: 700, color: '#f8fafc' }}>
+                                #{selectedAcc.account_id}
+                              </span>
+                              {selectedAcc.account_label && (
+                                <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
+                                  ({selectedAcc.account_label})
+                                </span>
+                              )}
+                            </div>
+                            {selectedAcc.equity !== undefined && (
+                              <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#10b981' }}>
+                                Equity: ${selectedAcc.equity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </div>
+                            )}
+                          </div>
+                          <div style={{ fontSize: '0.75rem', color: '#64748b', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                            <ShieldCheck size={13} color="#10b981" />
+                            <span>Tự động liên kết CTID Profile an toàn (không cần nhập mật khẩu)</span>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </>
+                )}
               </div>
 
               {/* Symbol & Timeframe */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
                 <div>
                   <label style={{ display: 'block', fontSize: '0.825rem', fontWeight: 600, color: '#cbd5e1', marginBottom: '0.4rem' }}>
-                    Trading Pair
+                    Cặp Tiền Giao Dịch (Symbol)
                   </label>
                   <select
                     value={deployForm.symbol}
-                    onChange={(e) => setDeployForm({ ...deployForm, symbol: e.target.value })}
+                    onChange={(e) => {
+                      const newSymbol = e.target.value;
+                      const cleanCbot = cbots.find(c => c.filename === deployForm.algo_path)?.name || deployForm.name;
+                      setDeployForm(prev => ({
+                        ...prev,
+                        symbol: newSymbol,
+                        name: generateBotInstanceName(cleanCbot, prev.account_id, newSymbol, prev.timeframe)
+                      }));
+                    }}
                     style={{
                       width: '100%',
                       padding: '0.65rem 0.85rem',
@@ -2441,11 +2574,19 @@ export default function BotManagerTab({ data, refreshData, isGuest = false }: Bo
 
                 <div>
                   <label style={{ display: 'block', fontSize: '0.825rem', fontWeight: 600, color: '#cbd5e1', marginBottom: '0.4rem' }}>
-                    Timeframe
+                    Khung Thời Gian (Timeframe)
                   </label>
                   <select
                     value={deployForm.timeframe}
-                    onChange={(e) => setDeployForm({ ...deployForm, timeframe: e.target.value })}
+                    onChange={(e) => {
+                      const newTf = e.target.value;
+                      const cleanCbot = cbots.find(c => c.filename === deployForm.algo_path)?.name || deployForm.name;
+                      setDeployForm(prev => ({
+                        ...prev,
+                        timeframe: newTf,
+                        name: generateBotInstanceName(cleanCbot, prev.account_id, prev.symbol, newTf)
+                      }));
+                    }}
                     style={{
                       width: '100%',
                       padding: '0.65rem 0.85rem',
@@ -2466,74 +2607,6 @@ export default function BotManagerTab({ data, refreshData, isGuest = false }: Bo
                     <option value="d1">D1 (Daily)</option>
                   </select>
                 </div>
-
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.825rem', fontWeight: 600, color: '#cbd5e1', marginBottom: '0.4rem' }}>
-                    Account Type
-                  </label>
-                  <select
-                    value={deployForm.account_type}
-                    onChange={(e) => setDeployForm({ ...deployForm, account_type: e.target.value })}
-                    style={{
-                      width: '100%',
-                      padding: '0.65rem 0.85rem',
-                      background: '#0f172a',
-                      border: '1px solid #334155',
-                      borderRadius: '6px',
-                      color: 'white',
-                      fontSize: '0.9rem',
-                      boxSizing: 'border-box'
-                    }}
-                  >
-                    <option value="demo">DEMO</option>
-                    <option value="live">LIVE / REAL</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* CTID Credentials */}
-              <div style={{ background: '#0f172a', padding: '1rem', borderRadius: '8px', border: '1px solid #334155' }}>
-                <div style={{ fontSize: '0.825rem', fontWeight: 700, color: '#94a3b8', marginBottom: '0.75rem' }}>
-                  cTrader CTID Credentials (Optional - Defaults to saved credentials)
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                  <div>
-                    <input
-                      type="text"
-                      placeholder="CTID Username / Email"
-                      value={deployForm.ctid_email}
-                      onChange={(e) => setDeployForm({ ...deployForm, ctid_email: e.target.value })}
-                      style={{
-                        width: '100%',
-                        padding: '0.55rem 0.75rem',
-                        background: '#1e293b',
-                        border: '1px solid #475569',
-                        borderRadius: '6px',
-                        color: 'white',
-                        fontSize: '0.85rem',
-                        boxSizing: 'border-box'
-                      }}
-                    />
-                  </div>
-                  <div>
-                    <input
-                      type="password"
-                      placeholder="CTID Password"
-                      value={deployForm.ctid_password}
-                      onChange={(e) => setDeployForm({ ...deployForm, ctid_password: e.target.value })}
-                      style={{
-                        width: '100%',
-                        padding: '0.55rem 0.75rem',
-                        background: '#1e293b',
-                        border: '1px solid #475569',
-                        borderRadius: '6px',
-                        color: 'white',
-                        fontSize: '0.85rem',
-                        boxSizing: 'border-box'
-                      }}
-                    />
-                  </div>
-                </div>
               </div>
 
               {/* Auto start check */}
@@ -2546,7 +2619,7 @@ export default function BotManagerTab({ data, refreshData, isGuest = false }: Bo
                   style={{ width: '16px', height: '16px', accentColor: '#0284c7', cursor: 'pointer' }}
                 />
                 <label htmlFor="auto_start" style={{ fontSize: '0.875rem', color: '#e2e8f0', cursor: 'pointer' }}>
-                  Start bot process automatically immediately after deploying
+                  Tự động khởi chạy bot ngay sau khi deploy (Start process automatically)
                 </label>
               </div>
 
@@ -2565,7 +2638,7 @@ export default function BotManagerTab({ data, refreshData, isGuest = false }: Bo
                     fontWeight: 600
                   }}
                 >
-                  Cancel
+                  Hủy (Cancel)
                 </button>
                 <button
                   type="submit"
@@ -2580,7 +2653,7 @@ export default function BotManagerTab({ data, refreshData, isGuest = false }: Bo
                     boxShadow: '0 4px 14px rgba(6, 182, 212, 0.3)'
                   }}
                 >
-                  Deploy & Launch
+                  Deploy & Khởi chạy
                 </button>
               </div>
             </form>
