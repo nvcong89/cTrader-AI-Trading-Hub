@@ -103,9 +103,9 @@ def sync_ctrader_broker_positions():
         
         # Locate or generate pwd file
         pwd_file = os.path.join(base_dir, f".runtime_pwd_{account_id}.txt")
-        if not os.path.exists(pwd_file) and password:
+        if password:
             with open(pwd_file, "w", encoding="utf-8") as pf:
-                pf.write(password + "\n")
+                pf.write(password.strip() + "\n")
         elif not os.path.exists(pwd_file):
             for f in os.listdir(base_dir):
                 if f.startswith(".runtime_pwd") and f.endswith(".txt"):

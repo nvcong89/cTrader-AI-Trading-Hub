@@ -62,9 +62,35 @@ def get_ctrader_cli_path() -> str:
 def get_ctrader_credentials(bot=None):
     """
     Get valid CTID email and password.
-    Prioritizes ctrader_account.txt as master source, with graceful fallback to bot instance.
-    Ensures email contains '@' and removes all whitespace/quotes.
+    Prioritizes:
+    1. Direct bot instance credentials (if valid email with '@' and password present).
+    2. Account profile from account_config (ctrader_accounts.json) matched by account_id.
+    3. Master ctrader_account.txt fallback.
     """
+    bot_ctid = ""
+    bot_pwd = ""
+    account_id = None
+    if bot:
+        if isinstance(bot, dict):
+            bot_ctid = (bot.get('ctid_email') or "").strip().strip('"').strip("'")
+            bot_pwd = (bot.get('ctid_password') or "").strip().strip('"').strip("'")
+            account_id = bot.get('account_id')
+
+    # 1. Direct bot instance credentials
+    if bot_ctid and "@" in bot_ctid and bot_pwd:
+        return bot_ctid.strip(), bot_pwd.strip()
+
+    # 2. Lookup via account_config (ctrader_accounts.json)
+    if account_id:
+        try:
+            from account_config import get_cli_credentials_for_account
+            cfg_email, cfg_pwd = get_cli_credentials_for_account(account_id)
+            if cfg_email and "@" in cfg_email and cfg_pwd:
+                return cfg_email.strip(), cfg_pwd.strip()
+        except Exception as ex:
+            log_message("SYSTEM", "DEBUG", f"account_config credential lookup error: {ex}")
+
+    # 3. Master ctrader_account.txt fallback
     file_ctid = ""
     file_pwd = ""
     cred_file = os.path.join(os.path.dirname(__file__), "ctrader_account.txt")
@@ -80,14 +106,6 @@ def get_ctrader_credentials(bot=None):
         except Exception as e:
             log_message("SYSTEM", "WARN", f"Error reading ctrader_account.txt: {e}")
 
-    bot_ctid = ""
-    bot_pwd = ""
-    if bot:
-        if isinstance(bot, dict):
-            bot_ctid = (bot.get('ctid_email') or "").strip().strip('"').strip("'")
-            bot_pwd = (bot.get('ctid_password') or "").strip().strip('"').strip("'")
-
-    # If bot has a valid email (contains '@'), use it, otherwise use master ctrader_account.txt
     ctid = bot_ctid if (bot_ctid and "@" in bot_ctid) else file_ctid
     password = bot_pwd if bot_pwd else file_pwd
 

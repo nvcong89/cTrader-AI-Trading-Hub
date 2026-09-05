@@ -78,8 +78,13 @@ app = FastAPI()
 # Enable automatic Gzip compression for all JSON and static responses > 1000 bytes (reduces payload by 75-85%)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-# Init Database
+# Init Database and sync configured multi-account profiles
 init_db()
+try:
+    from account_config import sync_accounts_to_database
+    sync_accounts_to_database()
+except Exception as _sync_err:
+    print(f"[Startup] Account config sync note: {_sync_err}")
 
 # Setup CORS (Supports Localhost, Remote VPS IP, and Custom Domains)
 app.add_middleware(
@@ -1509,6 +1514,23 @@ async def list_accounts(request: Request):
     finally:
         conn.close()
 
+@app.get("/api/accounts/profiles")
+async def get_account_profiles(request: Request):
+    get_current_user(request)
+    from account_config import get_all_profiles, sanitize_profiles_for_api
+    return {"profiles": sanitize_profiles_for_api(get_all_profiles())}
+
+@app.post("/api/accounts/reload")
+async def reload_accounts(request: Request):
+    require_admin(request)
+    from account_config import sync_accounts_to_database, get_all_configured_accounts
+    synced = sync_accounts_to_database()
+    return {
+        "status": "success",
+        "synced_count": synced,
+        "accounts": get_all_configured_accounts(enabled_only=True)
+    }
+
 @app.get("/api/dashboard")
 async def dashboard_view(request: Request):
     get_current_user(request)
@@ -1831,15 +1853,25 @@ async def create_bot(request: Request, data: CreateBotRequest):
     if not os.path.isabs(algo_path):
         algo_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "cbot", algo_path))
         
-    resolved_ctid, resolved_pwd = get_ctrader_credentials({"ctid_email": data.ctid_email, "ctid_password": data.ctid_password})
+    resolved_ctid, resolved_pwd = get_ctrader_credentials({
+        "account_id": data.account_id,
+        "ctid_email": data.ctid_email,
+        "ctid_password": data.ctid_password
+    })
 
     if data.ctid_email and data.ctid_password and "@" in data.ctid_email:
-        cred_file = os.path.join(os.path.dirname(__file__), "ctrader_account.txt")
-        with open(cred_file, "w", encoding="utf-8") as f:
-            f.write(f"CTID_EMAIL={data.ctid_email.strip()}\n")
-            f.write(f"CTID_PASSWORD={data.ctid_password.strip()}\n")
         resolved_ctid = data.ctid_email.strip()
         resolved_pwd = data.ctid_password.strip()
+        # Only update legacy ctrader_account.txt if multi-account JSON is not present
+        json_cfg = os.path.join(os.path.dirname(__file__), "ctrader_accounts.json")
+        if not os.path.exists(json_cfg):
+            cred_file = os.path.join(os.path.dirname(__file__), "ctrader_account.txt")
+            try:
+                with open(cred_file, "w", encoding="utf-8") as f:
+                    f.write(f"CTID_EMAIL={resolved_ctid}\n")
+                    f.write(f"CTID_PASSWORD={resolved_pwd}\n")
+            except Exception:
+                pass
         
     conn = get_db()
     try:
@@ -2365,228 +2397,270 @@ async def sync_ctrader_cloud_telemetry(force: bool = False) -> Dict[str, Any]:
         return {"status": "no_active_bots", "message": "No active bots running."}
 
     _is_cloud_syncing = True
-    client = None
+    synced_accounts = []
+    unmatched_accounts = []
+    total_open_positions = 0
+
     try:
-        creds, _ = load_ctrader_env()
-        client_id = creds.get("clientID")
-        secret = creds.get("secret")
-        access_token = creds.get("ACCESS_TOKEN")
-
-        if not client_id or not secret or not access_token:
-            return {"status": "unconfigured"}
-
-        client = CTraderOpenAPIClient(environment="demo", timeout=12.0)
-        await client.connect()
-        await client.authorize_application(client_id, secret)
-        accounts_list = await client.get_accounts_by_access_token(access_token)
-
-        # Build lookup maps for fast matching
-        acc_map = {}
-        for acc in accounts_list:
-            acc_id = str(acc.ctidTraderAccountId)
-            trader_id = str(getattr(acc, "traderLogin", acc_id))
-            acc_map[acc_id] = acc
-            acc_map[trader_id] = acc
-
-        synced_accounts = []
-        unmatched_accounts = []
-        total_open_positions = 0
-        cached_sym_maps = {}
-
+        from account_config import get_open_api_credentials_for_account
+        
+        # 2. Group active accounts by their resolved Open API credentials
+        cred_groups: Dict[str, Dict[str, Any]] = {}
         for target_id in active_account_ids:
-            matched_acc = acc_map.get(target_id)
-            if not matched_acc:
+            oa_creds = get_open_api_credentials_for_account(target_id)
+            if not oa_creds or not oa_creds.get("client_id") or not oa_creds.get("access_token"):
                 unmatched_accounts.append(target_id)
                 continue
+            
+            sig = f"{oa_creds['client_id']}::{oa_creds['access_token']}"
+            if sig not in cred_groups:
+                cred_groups[sig] = {
+                    "creds": oa_creds,
+                    "target_ids": []
+                }
+            cred_groups[sig]["target_ids"].append(target_id)
 
-            selected_acc_id = matched_acc.ctidTraderAccountId
-            trader_id = getattr(matched_acc, "traderLogin", selected_acc_id)
-            is_live = getattr(matched_acc, "isLive", False)
-            req_env = "live" if is_live else "demo"
+        if not cred_groups:
+            _last_cloud_sync_time = now_ts
+            return {
+                "status": "unconfigured" if not synced_accounts else "partial",
+                "synced_accounts": synced_accounts,
+                "unmatched_accounts": unmatched_accounts,
+                "open_positions": 0
+            }
 
-            if req_env != client.environment:
-                await client.disconnect()
-                client = CTraderOpenAPIClient(environment=req_env, timeout=12.0)
+        # 3. Synchronize each credential group with its isolated Open API TLS client
+        for sig, group_info in cred_groups.items():
+            creds = group_info["creds"]
+            group_targets = group_info["target_ids"]
+            client_id = creds["client_id"]
+            secret = creds["client_secret"]
+            access_token = creds["access_token"]
+            default_env = creds.get("environment", "live").lower()
+
+            client = None
+            try:
+                client = CTraderOpenAPIClient(environment=default_env, timeout=12.0)
                 await client.connect()
                 await client.authorize_application(client_id, secret)
+                accounts_list = await client.get_accounts_by_access_token(access_token)
 
-            await client.authorize_account(selected_acc_id, access_token)
-            trader = await client.get_trader_profile(selected_acc_id)
+                # Build lookup maps for fast matching
+                acc_map = {}
+                for acc in accounts_list:
+                    acc_id = str(acc.ctidTraderAccountId)
+                    trader_id = str(getattr(acc, "traderLogin", acc_id))
+                    acc_map[acc_id] = acc
+                    acc_map[trader_id] = acc
 
-            digits = getattr(trader, "moneyDigits", 2)
-            raw_balance = getattr(trader, "balance", 0)
-            balance = raw_balance / (10 ** digits) if digits > 0 else raw_balance / 100.0
-            now_iso = datetime.datetime.now().isoformat()
+                cached_sym_maps = {}
 
-            acc_keys = [str(selected_acc_id), str(trader_id), target_id]
-            for k in set(acc_keys):
-                latest_accounts[k] = {
-                    "balance": round(balance, 2),
-                    "equity": round(balance, 2),
-                    "last_updated": now_iso,
-                    "source": f"cTrader Cloud ({'LIVE' if is_live else 'DEMO'})"
-                }
+                for target_id in group_targets:
+                    matched_acc = acc_map.get(target_id)
+                    if not matched_acc:
+                        unmatched_accounts.append(target_id)
+                        continue
 
-            if selected_acc_id not in cached_sym_maps:
-                symbols = await client.get_symbols_list(selected_acc_id)
-                cached_sym_maps[selected_acc_id] = {s.symbolId: s.symbolName for s in symbols}
-            sym_map = cached_sym_maps[selected_acc_id]
+                    selected_acc_id = matched_acc.ctidTraderAccountId
+                    trader_id = getattr(matched_acc, "traderLogin", selected_acc_id)
+                    is_live = getattr(matched_acc, "isLive", False)
+                    req_env = "live" if is_live else "demo"
 
-            reconcile_res = await client.reconcile_positions(selected_acc_id)
-            open_positions_count = len(reconcile_res.position)
-            total_open_positions += open_positions_count
+                    if req_env != client.environment:
+                        await client.disconnect()
+                        client = CTraderOpenAPIClient(environment=req_env, timeout=12.0)
+                        await client.connect()
+                        await client.authorize_application(client_id, secret)
 
-            # Subscribe to spot price ticks for all open position symbols
-            spot_prices = {}
-            def on_spot(pt, raw):
-                if pt == model_msg.PROTO_OA_SPOT_EVENT:
-                    se = msg.ProtoOASpotEvent()
-                    se.ParseFromString(raw)
-                    bid = (se.bid / 100000.0) if getattr(se, "bid", None) else None
-                    ask = (se.ask / 100000.0) if getattr(se, "ask", None) else None
-                    if se.symbolId not in spot_prices:
-                        spot_prices[se.symbolId] = {}
-                    if bid: spot_prices[se.symbolId]["bid"] = bid
-                    if ask: spot_prices[se.symbolId]["ask"] = ask
+                    await client.authorize_account(selected_acc_id, access_token)
+                    trader = await client.get_trader_profile(selected_acc_id)
 
-            client.on_event(model_msg.PROTO_OA_SPOT_EVENT, on_spot)
+                    digits = getattr(trader, "moneyDigits", 2)
+                    raw_balance = getattr(trader, "balance", 0)
+                    balance = raw_balance / (10 ** digits) if digits > 0 else raw_balance / 100.0
+                    now_iso = datetime.datetime.now().isoformat()
 
-            open_symbol_ids = list(set([p.tradeData.symbolId for p in reconcile_res.position]))
-            if open_symbol_ids:
-                try:
-                    await client.subscribe_spots(selected_acc_id, open_symbol_ids)
-                except Exception as sub_ex:
-                    log_message("SYSTEM", "DEBUG", f"Could not subscribe spots for {selected_acc_id}: {sub_ex}")
+                    acc_keys = [str(selected_acc_id), str(trader_id), target_id]
+                    for k in set(acc_keys):
+                        latest_accounts[k] = {
+                            "balance": round(balance, 2),
+                            "equity": round(balance, 2),
+                            "last_updated": now_iso,
+                            "source": f"cTrader Cloud ({'LIVE' if is_live else 'DEMO'})"
+                        }
 
-            # Fetch broker-calculated real-time Net & Gross Unrealized PnL
-            pnl_map = {}
-            total_net_pnl = 0.0
-            try:
-                pnl_res = await client.get_position_unrealized_pnl(selected_acc_id)
-                money_digits = getattr(pnl_res, "moneyDigits", 2) or 2
-                div = 10.0 ** money_digits
-                for upnl in pnl_res.positionUnrealizedPnL:
-                    net_val = round(upnl.netUnrealizedPnL / div, 2)
-                    gross_val = round(upnl.grossUnrealizedPnL / div, 2)
-                    pnl_map[upnl.positionId] = {"net": net_val, "gross": gross_val}
-                    total_net_pnl += net_val
-            except Exception as pnl_ex:
-                log_message("SYSTEM", "DEBUG", f"Could not fetch unrealized PnL for {selected_acc_id}: {pnl_ex}")
+                    if selected_acc_id not in cached_sym_maps:
+                        symbols = await client.get_symbols_list(selected_acc_id)
+                        cached_sym_maps[selected_acc_id] = {s.symbolId: s.symbolName for s in symbols}
+                    sym_map = cached_sym_maps[selected_acc_id]
 
-            # Brief grace period (0.25s) for spot events to arrive over TLS
-            if open_symbol_ids:
-                await asyncio.sleep(0.25)
+                    reconcile_res = await client.reconcile_positions(selected_acc_id)
+                    open_positions_count = len(reconcile_res.position)
+                    total_open_positions += open_positions_count
 
-            # Update latest_prices cache with current spot quotes
-            for sym_id, sp in spot_prices.items():
-                s_name = sym_map.get(sym_id)
-                if s_name:
-                    b = sp.get("bid")
-                    a = sp.get("ask") or b
-                    if b and a:
-                        latest_prices[s_name] = {"bid": b, "ask": a, "timestamp": now_ts}
+                    # Subscribe to spot price ticks for all open position symbols
+                    spot_prices = {}
+                    def on_spot(pt, raw):
+                        if pt == model_msg.PROTO_OA_SPOT_EVENT:
+                            se = msg.ProtoOASpotEvent()
+                            se.ParseFromString(raw)
+                            bid = (se.bid / 100000.0) if getattr(se, "bid", None) else None
+                            ask = (se.ask / 100000.0) if getattr(se, "ask", None) else None
+                            if se.symbolId not in spot_prices:
+                                spot_prices[se.symbolId] = {}
+                            if bid: spot_prices[se.symbolId]["bid"] = bid
+                            if ask: spot_prices[se.symbolId]["ask"] = ask
 
-            effective_equity = round(balance + total_net_pnl, 2)
+                    client.on_event(model_msg.PROTO_OA_SPOT_EVENT, on_spot)
 
-            conn_sync = get_db()
-            try:
-                c_sync = conn_sync.cursor()
-                c_sync.execute('''
-                    UPDATE accounts SET equity = ?, balance = ?, last_updated = ?
-                    WHERE account_id = ? OR account_id = ? OR account_id = ?
-                ''', (effective_equity, round(balance, 2), now_iso, str(selected_acc_id), str(trader_id), target_id))
+                    open_symbol_ids = list(set([p.tradeData.symbolId for p in reconcile_res.position]))
+                    if open_symbol_ids:
+                        try:
+                            await client.subscribe_spots(selected_acc_id, open_symbol_ids)
+                        except Exception as sub_ex:
+                            log_message("SYSTEM", "DEBUG", f"Could not subscribe spots for {selected_acc_id}: {sub_ex}")
 
-                current_c_ids = [p.positionId for p in reconcile_res.position]
-                if current_c_ids:
-                    placeholders = ",".join("?" for _ in current_c_ids)
-                    c_sync.execute(f'''
-                        DELETE FROM positions 
-                        WHERE (account_id = ? OR account_id = ? OR account_id = ?) 
-                        AND ctrader_id NOT IN ({placeholders})
-                    ''', (str(selected_acc_id), str(trader_id), target_id, *current_c_ids))
-                else:
-                    c_sync.execute('''
-                        DELETE FROM positions 
-                        WHERE account_id = ? OR account_id = ? OR account_id = ?
-                    ''', (str(selected_acc_id), str(trader_id), target_id))
+                    # Fetch broker-calculated real-time Net & Gross Unrealized PnL
+                    pnl_map = {}
+                    total_net_pnl = 0.0
+                    try:
+                        pnl_res = await client.get_position_unrealized_pnl(selected_acc_id)
+                        money_digits = getattr(pnl_res, "moneyDigits", 2) or 2
+                        div = 10.0 ** money_digits
+                        for upnl in pnl_res.positionUnrealizedPnL:
+                            net_val = round(upnl.netUnrealizedPnL / div, 2)
+                            gross_val = round(upnl.grossUnrealizedPnL / div, 2)
+                            pnl_map[upnl.positionId] = {"net": net_val, "gross": gross_val}
+                            total_net_pnl += net_val
+                    except Exception as pnl_ex:
+                        log_message("SYSTEM", "DEBUG", f"Could not fetch unrealized PnL for {selected_acc_id}: {pnl_ex}")
 
-                for p in reconcile_res.position:
-                    c_id = p.positionId
-                    sym_name = sym_map.get(p.tradeData.symbolId, "XAUUSD")
-                    side = "BUY" if p.tradeData.tradeSide == 1 else "SELL"
-                    vol = normalize_open_api_volume(p.tradeData.volume, sym_name)
-                    entry_p = p.price
-                    sl_val = getattr(p, "stopLoss", 0.0) or 0.0
-                    tp_val = getattr(p, "takeProfit", 0.0) or 0.0
-                    comment_val = getattr(p.tradeData, "comment", "") or "cTrader Cloud Position"
-                    open_ts = getattr(p.tradeData, "openTimestamp", 0)
-                    open_time_iso = datetime.datetime.fromtimestamp(open_ts / 1000.0).isoformat() if open_ts > 0 else now_iso
+                    # Brief grace period (0.25s) for spot events to arrive over TLS
+                    if open_symbol_ids:
+                        await asyncio.sleep(0.25)
 
-                    sym_upper = sym_name.upper()
-                    if any(k in sym_upper for k in ["BTC", "ETH", "US30", "US 500", "US500", "JAPAN", "NAS", "GER", "UK", "SPX", "WS30", "NDX"]):
-                        pip_size = 1.0
-                    elif any(k in sym_upper for k in ["JPY", "XAU", "GOLD", "OIL", "WTI"]):
-                        pip_size = 0.01
-                    else:
-                        pip_size = 0.0001
+                    # Update latest_prices cache with current spot quotes
+                    for sym_id, sp in spot_prices.items():
+                        s_name = sym_map.get(sym_id)
+                        if s_name:
+                            b = sp.get("bid")
+                            a = sp.get("ask") or b
+                            if b and a:
+                                latest_prices[s_name] = {"bid": b, "ask": a, "timestamp": now_ts}
 
-                    # Resolve current market price
-                    cur_spot = spot_prices.get(p.tradeData.symbolId, {})
-                    cur_p = cur_spot.get("bid" if side == "BUY" else "ask") or cur_spot.get("bid") or cur_spot.get("ask")
-                    if not cur_p and sym_name in latest_prices:
-                        cur_p = latest_prices[sym_name].get("bid" if side == "BUY" else "ask")
-                    if not cur_p:
-                        cur_p = entry_p
+                    effective_equity = round(balance + total_net_pnl, 2)
 
-                    # Resolve Net Unrealized P&L from broker or math fallback
-                    if c_id in pnl_map:
-                        pnl_val = pnl_map[c_id]["net"]
-                    else:
-                        mult = 1.0 if ("XAU" in sym_upper or "GOLD" in sym_upper or any(k in sym_upper for k in ["BTC", "ETH", "US30", "US 500", "US500", "JAPAN", "NAS", "GER", "UK", "SPX"])) else 10.0
-                        diff = (cur_p - entry_p) if side == "BUY" else (entry_p - cur_p)
-                        pnl_val = round((diff / pip_size) * vol * mult, 2)
-
-                    # Resolve PnL in Pips / Points
-                    if cur_p and cur_p > 0 and cur_p != entry_p:
-                        pnl_pips = round((cur_p - entry_p) / pip_size, 1) if side == "BUY" else round((entry_p - cur_p) / pip_size, 1)
-                    else:
-                        pnl_pips = 0.0
-
-                    if side == "BUY":
-                        sl_pips = round((entry_p - sl_val) / pip_size, 1) if (sl_val and sl_val > 0) else 0.0
-                        tp_pips = round((tp_val - entry_p) / pip_size, 1) if (tp_val and tp_val > 0) else 0.0
-                    else:
-                        sl_pips = round((sl_val - entry_p) / pip_size, 1) if (sl_val and sl_val > 0) else 0.0
-                        tp_pips = round((entry_p - tp_val) / pip_size, 1) if (tp_val and tp_val > 0) else 0.0
-
-                    c_sync.execute('''
-                        SELECT id FROM positions WHERE ctrader_id = ?
-                    ''', (c_id,))
-                    row = c_sync.fetchone()
-                    if row:
+                    conn_sync = get_db()
+                    try:
+                        c_sync = conn_sync.cursor()
                         c_sync.execute('''
-                            UPDATE positions 
-                            SET volume = ?, entry_price = ?, current_price = ?, pnl = ?, pnl_pips = ?, sl_price = ?, tp_price = ?, sl_pips = ?, tp_pips = ?, reason = ?
-                            WHERE ctrader_id = ?
-                        ''', (vol, entry_p, cur_p, pnl_val, pnl_pips, sl_val, tp_val, sl_pips, tp_pips, comment_val, c_id))
-                    else:
-                        c_sync.execute('''
-                            INSERT INTO positions (ctrader_id, account_id, bot_id, symbol, side, volume, entry_price, current_price, pnl, pnl_pips, sl_price, tp_price, sl_pips, tp_pips, reason, entry_time)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (c_id, target_id, comment_val, sym_name, side, vol, entry_p, cur_p, pnl_val, pnl_pips, sl_val, tp_val, sl_pips, tp_pips, comment_val, open_time_iso))
+                            UPDATE accounts SET equity = ?, balance = ?, last_updated = ?
+                            WHERE account_id = ? OR account_id = ? OR account_id = ?
+                        ''', (effective_equity, round(balance, 2), now_iso, str(selected_acc_id), str(trader_id), target_id))
 
-                conn_sync.commit()
-            except Exception as e:
-                log_message("SYSTEM", "WARN", f"Error persisting Cloud Open API positions for {target_id}: {e}")
+                        current_c_ids = [p.positionId for p in reconcile_res.position]
+                        if current_c_ids:
+                            placeholders = ",".join("?" for _ in current_c_ids)
+                            c_sync.execute(f'''
+                                DELETE FROM positions 
+                                WHERE (account_id = ? OR account_id = ? OR account_id = ?) 
+                                AND ctrader_id NOT IN ({placeholders})
+                            ''', (str(selected_acc_id), str(trader_id), target_id, *current_c_ids))
+                        else:
+                            c_sync.execute('''
+                                DELETE FROM positions 
+                                WHERE account_id = ? OR account_id = ? OR account_id = ?
+                            ''', (str(selected_acc_id), str(trader_id), target_id))
+
+                        for p in reconcile_res.position:
+                            c_id = p.positionId
+                            sym_name = sym_map.get(p.tradeData.symbolId, "XAUUSD")
+                            side = "BUY" if p.tradeData.tradeSide == 1 else "SELL"
+                            vol = normalize_open_api_volume(p.tradeData.volume, sym_name)
+                            entry_p = p.price
+                            sl_val = getattr(p, "stopLoss", 0.0) or 0.0
+                            tp_val = getattr(p, "takeProfit", 0.0) or 0.0
+                            comment_val = getattr(p.tradeData, "comment", "") or "cTrader Cloud Position"
+                            open_ts = getattr(p.tradeData, "openTimestamp", 0)
+                            open_time_iso = datetime.datetime.fromtimestamp(open_ts / 1000.0).isoformat() if open_ts > 0 else now_iso
+
+                            sym_upper = sym_name.upper()
+                            if any(k in sym_upper for k in ["BTC", "ETH", "US30", "US 500", "US500", "JAPAN", "NAS", "GER", "UK", "SPX", "WS30", "NDX"]):
+                                pip_size = 1.0
+                            elif any(k in sym_upper for k in ["JPY", "XAU", "GOLD", "OIL", "WTI"]):
+                                pip_size = 0.01
+                            else:
+                                pip_size = 0.0001
+
+                            # Resolve current market price
+                            cur_spot = spot_prices.get(p.tradeData.symbolId, {})
+                            cur_p = cur_spot.get("bid" if side == "BUY" else "ask") or cur_spot.get("bid") or cur_spot.get("ask")
+                            if not cur_p and sym_name in latest_prices:
+                                cur_p = latest_prices[sym_name].get("bid" if side == "BUY" else "ask")
+                            if not cur_p:
+                                cur_p = entry_p
+
+                            # Resolve Net Unrealized P&L from broker or math fallback
+                            if c_id in pnl_map:
+                                pnl_val = pnl_map[c_id]["net"]
+                            else:
+                                mult = 1.0 if ("XAU" in sym_upper or "GOLD" in sym_upper or any(k in sym_upper for k in ["BTC", "ETH", "US30", "US 500", "US500", "JAPAN", "NAS", "GER", "UK", "SPX"])) else 10.0
+                                diff = (cur_p - entry_p) if side == "BUY" else (entry_p - cur_p)
+                                pnl_val = round((diff / pip_size) * vol * mult, 2)
+
+                            # Resolve PnL in Pips / Points
+                            if cur_p and cur_p > 0 and cur_p != entry_p:
+                                pnl_pips = round((cur_p - entry_p) / pip_size, 1) if side == "BUY" else round((entry_p - cur_p) / pip_size, 1)
+                            else:
+                                pnl_pips = 0.0
+
+                            if side == "BUY":
+                                sl_pips = round((entry_p - sl_val) / pip_size, 1) if (sl_val and sl_val > 0) else 0.0
+                                tp_pips = round((tp_val - entry_p) / pip_size, 1) if (tp_val and tp_val > 0) else 0.0
+                            else:
+                                sl_pips = round((sl_val - entry_p) / pip_size, 1) if (sl_val and sl_val > 0) else 0.0
+                                tp_pips = round((entry_p - tp_val) / pip_size, 1) if (tp_val and tp_val > 0) else 0.0
+
+                            c_sync.execute('''
+                                SELECT id FROM positions WHERE ctrader_id = ?
+                            ''', (c_id,))
+                            row = c_sync.fetchone()
+                            if row:
+                                c_sync.execute('''
+                                    UPDATE positions 
+                                    SET volume = ?, entry_price = ?, current_price = ?, pnl = ?, pnl_pips = ?, sl_price = ?, tp_price = ?, sl_pips = ?, tp_pips = ?, reason = ?
+                                    WHERE ctrader_id = ?
+                                ''', (vol, entry_p, cur_p, pnl_val, pnl_pips, sl_val, tp_val, sl_pips, tp_pips, comment_val, c_id))
+                            else:
+                                c_sync.execute('''
+                                    INSERT INTO positions (ctrader_id, account_id, bot_id, symbol, side, volume, entry_price, current_price, pnl, pnl_pips, sl_price, tp_price, sl_pips, tp_pips, reason, entry_time)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                ''', (c_id, target_id, comment_val, sym_name, side, vol, entry_p, cur_p, pnl_val, pnl_pips, sl_val, tp_val, sl_pips, tp_pips, comment_val, open_time_iso))
+
+                        conn_sync.commit()
+                    except Exception as e:
+                        log_message("SYSTEM", "WARN", f"Error persisting Cloud Open API positions for {target_id}: {e}")
+                    finally:
+                        conn_sync.close()
+
+                    # Update in-memory live telemetry accounts
+                    latest_accounts[target_id] = {"balance": round(balance, 2), "equity": effective_equity, "timestamp": now_ts}
+                    latest_accounts[str(selected_acc_id)] = {"balance": round(balance, 2), "equity": effective_equity, "timestamp": now_ts}
+                    latest_accounts[str(trader_id)] = {"balance": round(balance, 2), "equity": effective_equity, "timestamp": now_ts}
+
+                    synced_accounts.append(target_id)
+
+            except Exception as grp_ex:
+                log_message("SYSTEM", "WARN", f"Open API group sync error ({client_id[:12]}...): {grp_ex}")
+                for tid in group_targets:
+                    if tid not in synced_accounts and tid not in unmatched_accounts:
+                        unmatched_accounts.append(tid)
             finally:
-                conn_sync.close()
-
-            # Update in-memory live telemetry accounts
-            latest_accounts[target_id] = {"balance": round(balance, 2), "equity": effective_equity, "timestamp": now_ts}
-            latest_accounts[str(selected_acc_id)] = {"balance": round(balance, 2), "equity": effective_equity, "timestamp": now_ts}
-            latest_accounts[str(trader_id)] = {"balance": round(balance, 2), "equity": effective_equity, "timestamp": now_ts}
-
-            synced_accounts.append(target_id)
+                if client:
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
 
         _last_cloud_sync_time = now_ts
         return {
@@ -2597,13 +2671,8 @@ async def sync_ctrader_cloud_telemetry(force: bool = False) -> Dict[str, Any]:
         }
     except Exception as ex:
         log_message("SYSTEM", "WARN", f"Cloud Open API sync error: {ex}")
-        return {"status": "error", "message": str(ex)}
+        return {"status": "error", "message": str(ex), "unmatched_accounts": unmatched_accounts}
     finally:
-        if client:
-            try:
-                await client.disconnect()
-            except Exception:
-                pass
         _is_cloud_syncing = False
 
 async def sync_active_accounts_telemetry(force: bool = False):

@@ -26,6 +26,8 @@ __pycache__/
 .runtime_pwd*
 *.runtime_pwd*
 ctrader_account.txt
+ctrader_accounts.json
+!ctrader_accounts.sample.json
 pwd.txt
 account_login.env
 telegram.env

@@ -146,6 +146,21 @@ def init_db():
         pass
 
     try:
+        c.execute("ALTER TABLE accounts ADD COLUMN currency TEXT DEFAULT 'USD'")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        c.execute("ALTER TABLE accounts ADD COLUMN ctid_email TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        c.execute("ALTER TABLE accounts ADD COLUMN profile_id TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
         # Populate broker for known accounts
         c.execute("UPDATE accounts SET broker = 'FxPro' WHERE (broker IS NULL OR broker = '') AND (account_id LIKE '82%' OR account_id LIKE '8%' OR account_label LIKE '%FxPro%')")
         c.execute("UPDATE accounts SET broker = 'Spotware' WHERE (broker IS NULL OR broker = '') AND (account_id LIKE '437%' OR account_label LIKE '%Demo%')")

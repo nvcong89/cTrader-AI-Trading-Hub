@@ -1,0 +1,61 @@
+{
+  "version": "1.0",
+  "description": "cTrader AI Trading Hub - Multi-Account & Multi-cTID Configuration",
+  "profiles": [
+    {
+      "id": "profile_1",
+      "profile_name": "Primary Trading Account",
+      "enabled": true,
+      "ctid_email": "user1@example.com",
+      "ctid_password": "YourPassword1",
+      "open_api": {
+        "client_id": "YOUR_CLIENT_ID_1",
+        "client_secret": "YOUR_CLIENT_SECRET_1",
+        "access_token": "YOUR_ACCESS_TOKEN_1",
+        "environment": "live",
+        "redirect_uri": "https://openapi.ctrader.com/apps/token"
+      },
+      "accounts": [
+        {
+          "account_id": "46477582",
+          "account_label": "FxPro Live Scalping",
+          "broker": "FxPro",
+          "account_type": "live",
+          "currency": "USD"
+        }
+      ]
+    },
+    {
+      "id": "profile_2",
+      "profile_name": "Secondary Partner Account",
+      "enabled": true,
+      "ctid_email": "user2@example.com",
+      "ctid_password": "YourPassword2",
+      "open_api": {
+        "client_id": "YOUR_CLIENT_ID_2",
+        "client_secret": "YOUR_CLIENT_SECRET_2",
+        "access_token": "YOUR_ACCESS_TOKEN_2",
+        "environment": "live",
+        "redirect_uri": "https://openapi.ctrader.com/apps/token"
+      },
+      "accounts": [
+        {
+          "account_id": "8246991",
+          "ctid_trader_id": "45691217",
+          "account_label": "FxPro Main Live ($683)",
+          "broker": "FxPro",
+          "account_type": "live",
+          "currency": "USD"
+        },
+        {
+          "account_id": "8237659",
+          "ctid_trader_id": "45007295",
+          "account_label": "FxPro Sub 1",
+          "broker": "FxPro",
+          "account_type": "live",
+          "currency": "USD"
+        }
+      ]
+    }
+  ]
+}

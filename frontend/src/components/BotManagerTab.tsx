@@ -65,6 +65,10 @@ interface AccountItem {
   account_id: string;
   account_label?: string;
   account_type?: string;
+  broker?: string;
+  currency?: string;
+  ctid_email?: string;
+  profile_id?: string;
   balance?: number;
   equity?: number;
   last_updated?: string;
@@ -2319,7 +2323,8 @@ export default function BotManagerTab({ data, refreshData, isGuest = false }: Bo
                                 ...deployForm,
                                 account_id: acc.account_id,
                                 account_label: acc.account_label || `Account #${acc.account_id}`,
-                                account_type: isAccLive ? 'live' : 'demo'
+                                account_type: isAccLive ? 'live' : 'demo',
+                                ctid_email: acc.ctid_email || deployForm.ctid_email
                               });
                             }}
                             style={{
@@ -2339,7 +2344,12 @@ export default function BotManagerTab({ data, refreshData, isGuest = false }: Bo
                             <span style={{ fontSize: '0.65rem', padding: '0.05rem 0.25rem', borderRadius: '3px', background: isAccLive ? 'rgba(245, 158, 11, 0.25)' : 'rgba(56, 189, 248, 0.25)' }}>
                               {isAccLive ? 'LIVE' : 'DEMO'}
                             </span>
-                            {acc.account_label || acc.account_id} (${acc.equity?.toFixed(2) || '0'})
+                            {acc.broker && (
+                              <span style={{ fontSize: '0.65rem', padding: '0.05rem 0.25rem', borderRadius: '3px', background: 'rgba(255, 255, 255, 0.12)', color: '#cbd5e1' }}>
+                                {acc.broker}
+                              </span>
+                            )}
+                            {acc.account_label || acc.account_id} {acc.equity ? `($${acc.equity.toFixed(2)})` : ''}
                           </button>
                         );
                       })}
