@@ -274,17 +274,6 @@ export default function AccountManagerTab({ isGuest: _isGuest = false, onNavigat
     }
   };
 
-  const handleToggleAccountStatus = async (acc: AccountItem) => {
-    const nextStatus = !(acc.enabled !== false);
-    try {
-      await axios.put(`${getApiBaseUrl()}/api/accounts/${acc.account_id}`, { enabled: nextStatus }, { withCredentials: true });
-      setAccounts(prev => prev.map(a => a.account_id === acc.account_id ? { ...a, enabled: nextStatus } : a));
-      setActionMessage({ type: 'success', text: `Tài khoản #${acc.account_id} đã ${nextStatus ? 'BẬT' : 'TẮT'}.` });
-    } catch (err: any) {
-      setActionMessage({ type: 'error', text: err.response?.data?.detail || 'Không thể đổi trạng thái tài khoản.' });
-    }
-  };
-
   const handleDeleteAccount = async () => {
     if (!targetAccount) return;
     try {
@@ -1071,14 +1060,13 @@ export default function AccountManagerTab({ isGuest: _isGuest = false, onNavigat
                 <th style={{ padding: '0.75rem 1rem', fontWeight: 700, textAlign: 'right' }}>Số Dư (Balance)</th>
                 <th style={{ padding: '0.75rem 1rem', fontWeight: 700, textAlign: 'right' }}>Vốn Khả Dụng (Equity)</th>
                 <th style={{ padding: '0.75rem 1rem', fontWeight: 700, textAlign: 'center' }}>Bot Hoạt Động</th>
-                <th style={{ padding: '0.75rem 1rem', fontWeight: 700, textAlign: 'center' }}>Trạng Thái</th>
                 <th style={{ padding: '0.75rem 1rem', fontWeight: 700, textAlign: 'right' }}>Thao Tác</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={9} style={{ padding: '2rem', textAlign: 'center', color: '#94a3b8' }}>
+                  <td colSpan={8} style={{ padding: '2rem', textAlign: 'center', color: '#94a3b8' }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}>
                       <RefreshCw size={18} className="spin" /> Đang tải danh sách tài khoản...
                     </div>
@@ -1086,20 +1074,19 @@ export default function AccountManagerTab({ isGuest: _isGuest = false, onNavigat
                 </tr>
               ) : filteredAccounts.length === 0 ? (
                 <tr>
-                  <td colSpan={9} style={{ padding: '2rem', textAlign: 'center', color: '#64748b' }}>
+                  <td colSpan={8} style={{ padding: '2rem', textAlign: 'center', color: '#64748b' }}>
                     Không tìm thấy tài khoản nào phù hợp với bộ lọc hiện tại.
                   </td>
                 </tr>
               ) : (
                 filteredAccounts.map(acc => {
                   const isLive = (acc.account_type || '').toLowerCase() === 'live';
-                  const isEnabled = acc.enabled !== false;
                   return (
                     <tr
                       key={acc.account_id}
                       style={{
                         borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
-                        background: isEnabled ? 'transparent' : 'rgba(0, 0, 0, 0.2)',
+                        background: 'transparent',
                         transition: 'background 0.15s ease'
                       }}
                     >
@@ -1179,26 +1166,6 @@ export default function AccountManagerTab({ isGuest: _isGuest = false, onNavigat
                         ) : (
                           <span style={{ color: '#64748b', fontSize: '0.75rem' }}>0</span>
                         )}
-                      </td>
-
-                      {/* Active Status Toggle */}
-                      <td style={{ padding: '0.75rem 1rem', textAlign: 'center' }}>
-                        <button
-                          onClick={() => handleToggleAccountStatus(acc)}
-                          style={{
-                            background: isEnabled ? 'rgba(16, 185, 129, 0.2)' : 'rgba(100, 116, 139, 0.2)',
-                            color: isEnabled ? '#34d399' : '#94a3b8',
-                            border: `1px solid ${isEnabled ? 'rgba(16, 185, 129, 0.4)' : 'rgba(100, 116, 139, 0.3)'}`,
-                            padding: '0.2rem 0.55rem',
-                            borderRadius: '4px',
-                            fontSize: '0.7rem',
-                            fontWeight: 700,
-                            cursor: 'pointer'
-                          }}
-                          title={isEnabled ? 'Nhấn để tạm tắt tài khoản này' : 'Nhấn để kích hoạt lại'}
-                        >
-                          {isEnabled ? 'BẬT' : 'TẮT'}
-                        </button>
                       </td>
 
                       {/* Actions */}
