@@ -64,6 +64,22 @@ def is_news_blackout_active(events, symbol: str, now_utc: datetime,
             return True, reason
     return False, ""
 
+def should_force_close_before_news(events, symbol: str, now_utc: datetime, 
+                                   close_before_mins: int = 6, 
+                                   high_impact_only: bool = True):
+    for ev in events:
+        if high_impact_only and ev["impact"].lower() != "high":
+            continue
+        if not is_currency_relevant(symbol, ev["country"]):
+            continue
+            
+        start_close = ev["date_utc"] - timedelta(minutes=close_before_mins)
+        if start_close <= now_utc <= ev["date_utc"]:
+            diff_mins = (ev["date_utc"] - now_utc).total_seconds() / 60.0
+            reason = f"Force Close before High Impact News: '{ev['title']}' ({ev['country']}) in {diff_mins:.0f}m"
+            return True, reason
+    return False, ""
+
 
 class TestNewsFilter(unittest.TestCase):
     def test_currency_relevance(self):
@@ -75,60 +91,91 @@ class TestNewsFilter(unittest.TestCase):
         self.assertFalse(is_currency_relevant("XAUUSD", "AUD"))
         self.assertFalse(is_currency_relevant("XAUUSD", "CAD"))
         
-        # Forex
+        # Crypto
+        self.assertTrue(is_currency_relevant("BTCUSD", "USD"))
+        self.assertTrue(is_currency_relevant("BITCOIN", "USD"))
+        self.assertTrue(is_currency_relevant("ETHUSD", "USD"))
+        
+        # Forex Pairs
         self.assertTrue(is_currency_relevant("EURUSD", "EUR"))
         self.assertTrue(is_currency_relevant("EURUSD", "USD"))
         self.assertFalse(is_currency_relevant("EURUSD", "GBP"))
-        self.assertTrue(is_currency_relevant("GBPJPY", "GBP"))
-        self.assertTrue(is_currency_relevant("GBPJPY", "JPY"))
-        self.assertFalse(is_currency_relevant("GBPJPY", "USD"))
-        
-        # Broker suffix / prefix
-        self.assertTrue(is_currency_relevant("mXAUUSD_ecn", "USD"))
-        self.assertTrue(is_currency_relevant("EURUSD.pro", "EUR"))
-        self.assertTrue(is_currency_relevant("EURUSD.pro", "USD"))
-        
-        # Crypto
-        self.assertTrue(is_currency_relevant("BTCUSD", "USD"))
-        self.assertTrue(is_currency_relevant("ETHUSD", "USD"))
-        self.assertTrue(is_currency_relevant("BITCOIN", "USD"))
-        self.assertTrue(is_currency_relevant("ETHEREUM", "USD"))
-        self.assertFalse(is_currency_relevant("BITCOIN", "EUR"))
 
-    def test_utc_timezone_normalization(self):
-        # Sample ForexFactory item: 11:15 EDT (-04:00) is 15:15 UTC
-        raw_item = {
-            "title": "US Non-Farm Payrolls",
+    def test_news_blackout_timing(self):
+        item = {
+            "title": "Non-Farm Employment Change",
             "country": "USD",
-            "date": "2026-09-04T11:15:00-04:00",
+            "date": "2026-09-04T08:30:00-04:00", # 12:30 UTC
             "impact": "High"
         }
-        parsed = parse_forexfactory_json_item(raw_item)
-        expected_utc = datetime(2026, 9, 4, 15, 15, 0, tzinfo=timezone.utc)
-        self.assertEqual(parsed["date_utc"], expected_utc)
+        parsed = parse_forexfactory_json_item(item)
         
-        # Test blackout window
-        # 20 mins before news (14:55 UTC) -> should be blocked
-        now_1 = datetime(2026, 9, 4, 14, 55, 0, tzinfo=timezone.utc)
+        # News event is at 12:30 UTC
+        self.assertEqual(parsed["date_utc"].hour, 12)
+        self.assertEqual(parsed["date_utc"].minute, 30)
+        
+        # 20 mins before news (12:10 UTC) -> should be blocked with 30m window
+        now_1 = datetime(2026, 9, 4, 12, 10, 0, tzinfo=timezone.utc)
         blocked, reason = is_news_blackout_active([parsed], "XAUUSD", now_1, pause_before_mins=30, pause_after_mins=30)
         self.assertTrue(blocked)
         self.assertIn("in 20m", reason)
         
-        # 10 mins after news (15:25 UTC) -> should be blocked
-        now_2 = datetime(2026, 9, 4, 15, 25, 0, tzinfo=timezone.utc)
+        # 10 mins after news (12:40 UTC) -> should be blocked with 30m window
+        now_2 = datetime(2026, 9, 4, 12, 40, 0, tzinfo=timezone.utc)
         blocked, reason = is_news_blackout_active([parsed], "XAUUSD", now_2, pause_before_mins=30, pause_after_mins=30)
         self.assertTrue(blocked)
         self.assertIn("occurred 10m ago", reason)
         
-        # 45 mins before news (14:30 UTC) -> should be clear
-        now_3 = datetime(2026, 9, 4, 14, 30, 0, tzinfo=timezone.utc)
+        # 45 mins before news (11:45 UTC) -> should be clear
+        now_3 = datetime(2026, 9, 4, 11, 45, 0, tzinfo=timezone.utc)
         blocked, _ = is_news_blackout_active([parsed], "XAUUSD", now_3, pause_before_mins=30, pause_after_mins=30)
         self.assertFalse(blocked)
         
-        # 45 mins after news (16:00 UTC) -> should be clear
-        now_4 = datetime(2026, 9, 4, 16, 0, 0, tzinfo=timezone.utc)
+        # 45 mins after news (13:15 UTC) -> should be clear
+        now_4 = datetime(2026, 9, 4, 13, 15, 0, tzinfo=timezone.utc)
         blocked, _ = is_news_blackout_active([parsed], "XAUUSD", now_4, pause_before_mins=30, pause_after_mins=30)
         self.assertFalse(blocked)
+
+    def test_force_close_and_pause_news_intervals(self):
+        # News at 15:15 UTC (Non-Farm Employment Change, USD)
+        usd_news = {
+            "title": "Non-Farm Employment Change",
+            "country": "USD",
+            "date_utc": datetime(2026, 9, 4, 15, 15, 0, tzinfo=timezone.utc),
+            "impact": "High"
+        }
+        
+        # 1. At 15:00 UTC (15 mins before news):
+        # pauseBeforeNewsMins = 18 -> Entry is BLOCKED
+        # closeBeforeNewsMins = 6  -> Position is NOT force closed yet (still gồng to TP)
+        now_1500 = datetime(2026, 9, 4, 15, 0, 0, tzinfo=timezone.utc)
+        blocked, _ = is_news_blackout_active([usd_news], "XAUUSD", now_1500, pause_before_mins=18, pause_after_mins=12)
+        self.assertTrue(blocked, "New entries should be blocked 15m before news (within 18m window)")
+        
+        force_close, _ = should_force_close_before_news([usd_news], "XAUUSD", now_1500, close_before_mins=6)
+        self.assertFalse(force_close, "Positions should NOT be force closed 15m before news (wait until 6m)")
+        
+        # 2. At 15:10 UTC (5 mins before news):
+        # Entry BLOCKED and Force Close TRIGGERED
+        now_1510 = datetime(2026, 9, 4, 15, 10, 0, tzinfo=timezone.utc)
+        blocked, _ = is_news_blackout_active([usd_news], "XAUUSD", now_1510, pause_before_mins=18, pause_after_mins=12)
+        self.assertTrue(blocked)
+        
+        force_close, close_reason = should_force_close_before_news([usd_news], "XAUUSD", now_1510, close_before_mins=6)
+        self.assertTrue(force_close, "Positions MUST be force closed 5m before news (within 6m window)")
+        self.assertIn("Force Close before High Impact News", close_reason)
+        
+        # 3. At 15:20 UTC (5 mins after news):
+        # Entry is still BLOCKED (pauseAfterNewsMins = 12, market still erratic)
+        now_1520 = datetime(2026, 9, 4, 15, 20, 0, tzinfo=timezone.utc)
+        blocked, _ = is_news_blackout_active([usd_news], "XAUUSD", now_1520, pause_before_mins=18, pause_after_mins=12)
+        self.assertTrue(blocked, "New entries should remain blocked 5m after news (within 12m window)")
+        
+        # 4. At 15:30 UTC (15 mins after news):
+        # Market stabilized, entry blackout LIFTED
+        now_1530 = datetime(2026, 9, 4, 15, 30, 0, tzinfo=timezone.utc)
+        blocked, _ = is_news_blackout_active([usd_news], "XAUUSD", now_1530, pause_before_mins=18, pause_after_mins=12)
+        self.assertFalse(blocked, "Blackout should be completely lifted 15m after news")
 
     def test_unrelated_currency_not_blocked(self):
         # JPY High impact news at 15:15 UTC

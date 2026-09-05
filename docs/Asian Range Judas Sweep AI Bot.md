@@ -93,7 +93,10 @@ Tài liệu thiết kế kiến trúc và chiến thuật giao dịch cho **Asia
   - Tầng 1 (Pre-filter Gate): Tại `OnBarClosed()`, khi nằm trong cửa sổ tin đỏ (`pauseBeforeNewsMins` đến `pauseAfterNewsMins`), cổng tín hiệu bị khóa cứng ở trạng thái `MANAGE_ONLY`, không gửi truy vấn mở lệnh mới sang AI.
   - Tầng 2 (Execution Gate): Tại `ExecuteDecision()`, chặn đứng tức thì nếu quyết định `BUY`/`SELL` từ AI trả về trúng thời điểm tin tức đang diễn ra.
   - Tầng 3 (Staged Pullback Gate): Tại `ProcessStagedOrderExecution()`, hủy ngay lập tức các lệnh chờ hồi giá (Anti-FOMO Staged) nếu thị trường bước vào vùng bão tin.
-- **Đóng Vị Thế Thời Gian Thực**: `OnTick()` kiểm tra throttled 15s để kích hoạt `CloseAllPositions()` chính xác trước tin nếu tham số `closePositionsBeforeNews = true`.
+- **Đóng Vị Thế Trước Tin Độc Lập (`closeBeforeNewsMins = 6 phút`, `closePositionsBeforeNews = true`)**:
+  - Tách biệt hoàn toàn giữa việc **dừng mở lệnh mới** (`pauseBeforeNewsMins = 18 phút`) và **ép đóng vị thế đang chạy** (`closeBeforeNewsMins = 6 phút`).
+  - Lợi ích chiến thuật: Bot ngừng vào lệnh mới từ sớm (18 phút trước tin) để không dính trượt giá trước bão tin, nhưng vẫn cho phép các vị thế đang chạy thêm 12 phút để gồng chạm Take Profit tự nhiên. Chỉ khi còn 6 phút sát giờ phát hành tin đỏ, cBot mới kích hoạt `CloseAllPositions()` và gửi cảnh báo Telegram khẩn cấp để đưa tài khoản về trạng thái an toàn tuyệt đối.
+  - Sau tin (`pauseAfterNewsMins = 12 phút`), cBot chờ thị trường ổn định biên độ và tái tích lũy thanh khoản rồi mới mở lại cổng săn lệnh cho AI.
 - **Trực Quan Hóa Trên Biểu Đồ**: Hiển thị trạng thái tin tức và đếm ngược thời gian sự kiện trực tiếp trên bảng điều khiển chart (`UpdateUIPanel`).
 
 ---
@@ -130,6 +133,12 @@ Tài liệu thiết kế kiến trúc và chiến thuật giao dịch cho **Asia
 | `enableAiAdjustTrailing` | `bool` | `true` | Tự động kích hoạt Native Trailing Stop khi AI ADJUST dời SL gần sát Entry |
 | `aiAdjustTrailingThresholdPercent` | `double` | `80.0` | Ngưỡng (%) giảm rủi ro ban đầu để tự động bật Trailing Stop |
 | `breakEvenTrigger` | `double` | `250.0` | Điểm kích hoạt hòa vốn (pips) |
+| `enableNewsFilter` | `bool` | `true` | Bật/tắt bộ lọc tin tức kinh tế ForexFactory |
+| `newsImpactLevel` | `string` | `"High"` | Mức độ tác động tin tức cần lọc (`High`, `Medium`, `All`) |
+| `pauseBeforeNewsMins` | `int` | `18` | Dừng mở lệnh mới trước tin mạnh (phút) |
+| `pauseAfterNewsMins` | `int` | `12` | Dừng mở lệnh mới sau tin mạnh (phút) |
+| `closePositionsBeforeNews` | `bool` | `true` | Tự động cưỡng chế đóng tất cả vị thế đang chạy trước tin đỏ |
+| `closeBeforeNewsMins` | `int` | `6` | Thời gian cưỡng chế đóng vị thế trước tin đỏ (phút) |
 | `enableTelegramAlerts` | `bool` | `true` | Bật/tắt thông báo Telegram |
 | `sendAiAdjustAlerts` | `bool` | `false` | Bật/tắt cảnh báo định kỳ AI ADJUST (mặc định `false` để chống spam) |
 | `sendAntiFomoStagedAlerts` | `bool` | `false` | Bật/tắt cảnh báo trung gian Anti-FOMO Armed/Expired/Cancelled (mặc định `false` để chống spam) |

@@ -181,17 +181,20 @@ namespace cAlgo.Robots
         [Parameter("Enable Auto News Filter ?", Group = "News Filter", DefaultValue = true)]
         public bool enableNewsFilter { get; set; }
 
-        [Parameter("Pause Before High News (Mins)", Group = "News Filter", DefaultValue = 30, MinValue = 5)]
+        [Parameter("Pause Before High News (Mins)", Group = "News Filter", DefaultValue = 18, MinValue = 1)]
         public int pauseBeforeNewsMins { get; set; }
 
-        [Parameter("Pause After High News (Mins)", Group = "News Filter", DefaultValue = 30, MinValue = 5)]
+        [Parameter("Pause After High News (Mins)", Group = "News Filter", DefaultValue = 12, MinValue = 1)]
         public int pauseAfterNewsMins { get; set; }
 
         [Parameter("Filter High Impact News Only", Group = "News Filter", DefaultValue = true)]
         public bool highImpactOnly { get; set; }
 
-        [Parameter("Close Open Positions Before High News ?", Group = "News Filter", DefaultValue = false)]
+        [Parameter("Close Open Positions Before High News ?", Group = "News Filter", DefaultValue = true)]
         public bool closePositionsBeforeNews { get; set; }
+
+        [Parameter("Close Before News (Mins)", Group = "News Filter", DefaultValue = 6, MinValue = 1)]
+        public int closeBeforeNewsMins { get; set; }
         #endregion
 
         #region Setting Stop Loss and Take Profit
@@ -1742,20 +1745,22 @@ namespace cAlgo.Robots
                     snapshot = new List<NewsEvent>(_newsEvents);
                 }
 
+                int targetCloseMins = closeBeforeNewsMins > 0 ? closeBeforeNewsMins : pauseBeforeNewsMins;
+
                 foreach (var ev in snapshot)
                 {
                     if (highImpactOnly && !string.Equals(ev.Impact, "High", StringComparison.OrdinalIgnoreCase)) continue;
                     if (!IsCurrencyRelevant(ev.Country)) continue;
 
-                    // Close window: exactly within pauseBeforeNewsMins prior to news event release
-                    if (nowUtc >= ev.Date.AddMinutes(-pauseBeforeNewsMins) && nowUtc <= ev.Date)
+                    // Close window: exactly within closeBeforeNewsMins prior to news event release
+                    if (nowUtc >= ev.Date.AddMinutes(-targetCloseMins) && nowUtc <= ev.Date)
                     {
                         var positions = Positions.FindAll(label, SymbolName);
                         if (positions.Length > 0)
                         {
-                            Print($"[News Filter Protection] Closing {positions.Length} open positions before High Impact News: '{ev.Title}' ({ev.Country}) at {ev.Date:HH:mm} UTC.");
+                            Print($"[News Filter Protection] Force closing {positions.Length} open positions within {targetCloseMins}m before High Impact News: '{ev.Title}' ({ev.Country}) at {ev.Date:HH:mm} UTC.");
                             CloseAllPositions();
-                            _ = SendTelegramAlertAsync($"📰 <b>[News Filter Protection]</b>\nĐã đóng {positions.Length} vị thế <b>{SymbolName}</b> trước tin High Impact: <i>{ev.Title} ({ev.Country})</i> lúc {ev.Date:HH:mm} UTC.");
+                            _ = SendTelegramAlertAsync($"🚨 <b>[News Filter Force Close]</b>\nĐã chủ động đóng {positions.Length} vị thế <b>{SymbolName}</b> trước giờ ra tin đỏ {targetCloseMins} phút: <i>{ev.Title} ({ev.Country})</i> lúc {ev.Date:HH:mm} UTC.");
                             break;
                         }
                     }
