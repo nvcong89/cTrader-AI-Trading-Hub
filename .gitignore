@@ -10,8 +10,6 @@
 *.db-wal
 
 ## Build Artifacts & Binary Libraries
-[Bb]in/
-[Oo]bj/
 *.cache
 *.vsidx
 
