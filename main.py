@@ -1025,7 +1025,15 @@ async def trade_endpoint(data: MarketSnapshot):
 
         if is_judas and not has_active_positions:
             if kz == "Outside Killzones" or bias in ("MANAGE_ONLY", "NONE", ""):
-                log_message(data.bot_id, "INFO", f"[{data.symbol}] Outside Golden Killzones (Session: '{kz}', Bias: '{bias}') with clean order book. Auto-returning HOLD (New entries strictly prohibited during Asian accumulation / gap).")
+                is_outside = (kz == "Outside Killzones") or (not kz)
+                if is_outside:
+                    reason_msg = f"Outside Golden Killzones ({kz or 'Asian Accumulation / Gap'}). Clean order book - new entries strictly prohibited."
+                    log_msg = f"[{data.symbol}] Outside Golden Killzones (Session: '{kz}', Bias: '{bias}') with clean order book. Auto-returning HOLD (New entries strictly prohibited during Asian accumulation / gap)."
+                else:
+                    reason_msg = f"Inside Golden Killzone ({kz}): Waiting for Judas Sweep trigger (Bias: '{bias or 'NONE'}'). Clean order book - HOLD."
+                    log_msg = f"[{data.symbol}] Inside Golden Killzone ({kz}) with no Judas Sweep trigger (Bias: '{bias}') and clean order book. Auto-returning HOLD."
+
+                log_message(data.bot_id, "INFO", log_msg)
                 return AgentDecision(
                     request_id=data.request_id,
                     bot_id=data.bot_id,
@@ -1037,7 +1045,7 @@ async def trade_endpoint(data: MarketSnapshot):
                     tp_pips=0.0,
                     new_sl_price=0.0,
                     new_tp_price=0.0,
-                    reason=f"Outside Golden Killzones ({kz or 'Asian Accumulation / Gap'}). Clean order book - new entries strictly prohibited.",
+                    reason=reason_msg,
                     confidence=100.0
                 )
 

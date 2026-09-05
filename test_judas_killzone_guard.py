@@ -80,6 +80,20 @@ def test_outside_killzone_clean_orderbook_immediate_hold():
         # Crucial check: AI LLM dispatch was completely bypassed
         mock_dispatch.assert_not_called()
 
+def test_inside_killzone_clean_orderbook_no_trigger_hold():
+    """Verifies that inside Golden Killzone without Judas Sweep trigger and clean order book, /trade returns HOLD with clear message."""
+    payload = create_judas_snapshot(has_position=False, killzone="New York Overlap Killzone", bias="NONE")
+
+    with patch("ai_engine.dispatch_ai_trade", new_callable=AsyncMock) as mock_dispatch:
+        response = client.post("/trade", json=payload)
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["action"] == "HOLD"
+        assert data["confidence"] == 100.0
+        assert "Inside Golden Killzone (New York Overlap Killzone): Waiting for Judas Sweep trigger" in data["reason"]
+        mock_dispatch.assert_not_called()
+
 def test_inside_killzone_clean_orderbook_dispatches_llm():
     """Verifies that inside London Open Killzone with entry bias, LLM is properly dispatched."""
     payload = create_judas_snapshot(has_position=False, killzone="London Open Killzone", bias="BUY")
