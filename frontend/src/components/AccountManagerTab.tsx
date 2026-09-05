@@ -446,9 +446,19 @@ export default function AccountManagerTab({ isGuest: _isGuest = false, onNavigat
     return matchesSearch && matchesType && matchesBroker && matchesProfile;
   });
 
-  const totalBalance = accounts.reduce((sum, a) => sum + (a.balance || 0), 0);
-  const totalEquity = accounts.reduce((sum, a) => sum + (a.equity || 0), 0);
+  const liveAccounts = accounts.filter(a => (a.account_type || '').toLowerCase() === 'live');
+  const demoAccounts = accounts.filter(a => (a.account_type || '').toLowerCase() !== 'live');
+  const totalLiveBalance = liveAccounts.reduce((sum, a) => sum + (a.balance || 0), 0);
+  const totalLiveEquity = liveAccounts.reduce((sum, a) => sum + (a.equity || 0), 0);
+  const totalDemoBalance = demoAccounts.reduce((sum, a) => sum + (a.balance || 0), 0);
   const totalRunningBots = accounts.reduce((sum, a) => sum + (a.running_bots || 0), 0);
+
+  const isAccountInProfile = (acc: AccountItem, prof: ProfileItem) => {
+    if (acc.profile_id && acc.profile_id === prof.id) return true;
+    if (acc.ctid_email && prof.ctid_email && acc.ctid_email.toLowerCase() === prof.ctid_email.toLowerCase()) return true;
+    if (prof.accounts && prof.accounts.some((a: any) => String(a.account_id) === String(acc.account_id))) return true;
+    return false;
+  };
 
   return (
     <div style={{ color: '#f8fafc', maxWidth: '1600px', margin: '0 auto', paddingBottom: '3rem' }}>
@@ -609,15 +619,29 @@ export default function AccountManagerTab({ isGuest: _isGuest = false, onNavigat
         </div>
 
         <div style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: '8px', padding: '1rem' }}>
-          <div style={{ color: '#94a3b8', fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', marginBottom: '0.25rem' }}>Tổng Số Dư (Balance)</div>
-          <div style={{ fontSize: '1.5rem', fontWeight: 800, color: '#34d399' }}>${totalBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-          <div style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '0.2rem' }}>Đồng bộ thời gian thực</div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+            <span style={{ color: '#94a3b8', fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase' }}>Tổng Số Dư (Balance)</span>
+            <span style={{ fontSize: '0.65rem', fontWeight: 800, padding: '0.1rem 0.35rem', borderRadius: '3px', background: 'rgba(16, 185, 129, 0.2)', color: '#34d399', border: '1px solid rgba(16, 185, 129, 0.35)' }}>
+              CHỈ LIVE
+            </span>
+          </div>
+          <div style={{ fontSize: '1.5rem', fontWeight: 800, color: '#34d399' }}>
+            ${totalLiveBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </div>
+          <div style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '0.2rem' }}>
+            Đồng bộ thời gian thực{demoAccounts.length > 0 ? ` • Demo: $${totalDemoBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ''}
+          </div>
         </div>
 
         <div style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: '8px', padding: '1rem' }}>
-          <div style={{ color: '#94a3b8', fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', marginBottom: '0.25rem' }}>Vốn Khả Dụng (Equity)</div>
-          <div style={{ fontSize: '1.5rem', fontWeight: 800, color: totalEquity >= totalBalance ? '#34d399' : '#fbbf24' }}>
-            ${totalEquity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+            <span style={{ color: '#94a3b8', fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase' }}>Vốn Khả Dụng (Equity)</span>
+            <span style={{ fontSize: '0.65rem', fontWeight: 800, padding: '0.1rem 0.35rem', borderRadius: '3px', background: 'rgba(16, 185, 129, 0.2)', color: '#34d399', border: '1px solid rgba(16, 185, 129, 0.35)' }}>
+              CHỈ LIVE
+            </span>
+          </div>
+          <div style={{ fontSize: '1.5rem', fontWeight: 800, color: totalLiveEquity >= totalLiveBalance ? '#34d399' : '#fbbf24' }}>
+            ${totalLiveEquity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
           <div style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '0.2rem' }}>
             {totalRunningBots} bot đang giao dịch
@@ -662,6 +686,13 @@ export default function AccountManagerTab({ isGuest: _isGuest = false, onNavigat
             const isTesting = testingProfileId === prof.id;
             const isRefreshing = refreshingProfileId === prof.id;
             const isLiveEnv = (prof.open_api?.environment || 'demo').toLowerCase() === 'live';
+
+            const profAccounts = accounts.filter(a => isAccountInProfile(a, prof));
+            const profLiveAccounts = profAccounts.filter(a => (a.account_type || '').toLowerCase() === 'live');
+            const profDemoAccounts = profAccounts.filter(a => (a.account_type || '').toLowerCase() !== 'live');
+            const profLiveBalance = profLiveAccounts.reduce((sum, a) => sum + (a.balance || 0), 0);
+            const profLiveEquity = profLiveAccounts.reduce((sum, a) => sum + (a.equity || 0), 0);
+            const profDemoBalance = profDemoAccounts.reduce((sum, a) => sum + (a.balance || 0), 0);
 
             return (
               <div
@@ -736,6 +767,44 @@ export default function AccountManagerTab({ isGuest: _isGuest = false, onNavigat
                         <Trash2 size={12} />
                       </button>
                     </div>
+                  </div>
+
+                  {/* Financial Summary Strip (Live Balance & Equity) */}
+                  <div style={{
+                    background: 'rgba(15, 23, 42, 0.7)',
+                    border: '1px solid rgba(56, 189, 248, 0.2)',
+                    borderRadius: '6px',
+                    padding: '0.6rem 0.85rem',
+                    marginBottom: '0.85rem',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.35rem'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.4rem', fontSize: '0.825rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                        <span style={{ color: '#10b981', fontWeight: 700 }}>🟢 Live Balance:</span>
+                        <span style={{ fontWeight: 800, color: '#f8fafc', fontFamily: 'monospace' }}>
+                          ${profLiveBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                        <span style={{ color: '#64748b' }}>|</span>
+                        <span style={{ color: '#38bdf8', fontWeight: 700 }}>Equity:</span>
+                        <span style={{ fontWeight: 800, color: profLiveEquity >= profLiveBalance ? '#10b981' : '#fbbf24', fontFamily: 'monospace' }}>
+                          ${profLiveEquity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                      <span style={{ fontSize: '0.72rem', color: '#94a3b8', background: 'rgba(255, 255, 255, 0.05)', padding: '0.1rem 0.45rem', borderRadius: '4px' }}>
+                        {profLiveAccounts.length} tài khoản Live
+                      </span>
+                    </div>
+                    {profDemoAccounts.length > 0 && (
+                      <div style={{ fontSize: '0.72rem', color: '#64748b', display: 'flex', alignItems: 'center', gap: '0.4rem', borderTop: '1px dashed rgba(255, 255, 255, 0.06)', paddingTop: '0.25rem' }}>
+                        <span>🔵 Demo:</span>
+                        <span style={{ color: '#94a3b8', fontFamily: 'monospace' }}>
+                          ${profDemoBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                        <span>({profDemoAccounts.length} tài khoản)</span>
+                      </div>
+                    )}
                   </div>
 
                   {/* Open API Status Box */}
