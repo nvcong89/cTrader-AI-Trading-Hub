@@ -1,0 +1,4 @@
+IP=your_vps_ip
+USERNAME=root
+PASSWORD=your_vps_password
+PORT_SSH=22

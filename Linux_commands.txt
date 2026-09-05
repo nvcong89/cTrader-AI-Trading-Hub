@@ -1,0 +1,38 @@
+=====================================================================
+  cTrader AI Trading Hub - Thông tin kết nối & Lệnh hữu ích trên VPS Linux
+=====================================================================
+
+🌐 ĐƯỜNG DẪN TRUY CẬP HỆ THỐNG:
+   - Web Dashboard chính thức: http://YOUR_VPS_IP:8080/ (hoặc http://YOUR_VPS_IP:5173/)
+   - Swagger API Docs:        http://YOUR_VPS_IP:8080/docs
+   - cBot AI Trade Endpoint:   http://YOUR_VPS_IP:8080/trade (nội bộ VPS: http://127.0.0.1:8181/trade)
+
+🚀 1-CLICK DEPLOY TRÊN VPS WINDOWS (LOCAL RUNNER):
+   - Nhấp đúp vào: VPSdeploy_Window.bat
+   - Tác vụ: Kiểm tra audit, build 3 cBots, bật firewall, cài đặt deps và khởi chạy FastAPI + Vite trên Windows.
+
+🚀 1-CLICK DEPLOY TỪ MÁY LOCAL LÊN VPS LINUX:
+   - Nhấp đúp vào: VPSdeploy_Linux.bat
+   - Hoặc chạy: powershell -ExecutionPolicy Bypass -File .\deploy_to_vps.ps1
+
+📥 1-CLICK TẢI PORTFOLIO.DB & LOGS TỪ VPS VỀ LOCAL:
+   - Nhấp đúp vào: VPSfetch_Linux.bat
+   - Hoặc chạy: powershell -ExecutionPolicy Bypass -File .\fetch_from_vps.ps1
+   - Tải về và tự động lưu tại thư mục: vps_data/latest/
+   - Để đồng bộ đè vào local chạy ngay: powershell -File .\fetch_from_vps.ps1 -ApplyLocal
+
+🛡️ KIỂM TRA ĐA NỀN TẢNG WINDOWS/LINUX AUDIT:
+   - Chạy: powershell -ExecutionPolicy Bypass -File .agents\skills\vps-cross-platform-auditor\scripts\audit_cross_platform.ps1
+
+🔑 KẾT NỐI SSH NHANH TỪ WINDOWS TERMINAL / POWERSHELL:
+   - ssh root@YOUR_VPS_IP
+   (Đã cài SSH Key, tự động đăng nhập không cần mật khẩu)
+
+🛠️ CÁC LỆNH HỮU ÍCH TRÊN VPS:
+   - Xem trạng thái máy chủ Hub:  ssh root@YOUR_VPS_IP 'systemctl status ctrader-hub'
+   - Xem live logs máy chủ:      ssh root@YOUR_VPS_IP 'journalctl -u ctrader-hub -f -n 100'
+   - Khởi động lại Hub:           ssh root@YOUR_VPS_IP 'systemctl restart ctrader-hub'
+   - Xem trạng thái Nginx:        ssh root@YOUR_VPS_IP 'systemctl status nginx'
+   - Khởi động lại Nginx:         ssh root@YOUR_VPS_IP 'systemctl restart nginx'
+   - Kiểm tra CPU & RAM:          ssh root@YOUR_VPS_IP 'free -h && uptime'
+   - Kiểm tra cTrader CLI:        ssh root@YOUR_VPS_IP 'ctrader-cli --help'

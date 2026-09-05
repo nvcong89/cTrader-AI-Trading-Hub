@@ -1,0 +1,4088 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Xml.Linq;
+using cAlgo.API;
+using cAlgo.API.Indicators;
+
+namespace cAlgo.Robots
+{
+    public enum AiConnectionMode
+    {
+        Direct_OpenRouter_DashScope,
+        Local_Python_Server
+    }
+
+    public enum BreakEvenTriggerMode
+    {
+        Risk_Reward_Ratio,
+        Fixed_Pips
+    }
+
+    public enum AntiFomoToleranceMode
+    {
+        Dynamic_ATR_Percent,
+        Fixed_Pips
+    }
+
+    [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
+    public class Asian_Range_Judas_Sweep_AI_Bot : Robot
+    {
+        [Parameter("cTrader AI Bot Template", DefaultValue = "Asian Range Judas Sweep AI Bot")]
+        public string Message { get; set; }
+
+        #region Initial Setting
+        [Parameter("Label", Group = "Initial Setting", DefaultValue = "Asian Range Judas Sweep AI Bot")]
+        public string label { get; set; }
+
+        #region AI Agent Parameters
+        [Parameter("Direct AI Cloud API (OpenRouter/Qwen) ?", Group = "AI Agent Settings", DefaultValue = false)]
+        public bool UseDirectAiApi { get; set; } = false;
+
+        public AiConnectionMode AiMode => UseDirectAiApi ? AiConnectionMode.Direct_OpenRouter_DashScope : AiConnectionMode.Local_Python_Server;
+
+        [Parameter("Bot ID", Group = "AI Agent Settings", DefaultValue = "Asian Range Judas Sweep AI Bot")]
+        public string BotId { get; set; }
+
+        [Parameter("AI Endpoint URL", Group = "AI Agent Settings", DefaultValue = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions")]
+        public string ApiUrl { get; set; }
+
+        [Parameter("AI API Key (Bearer Token)", Group = "AI Agent Settings", DefaultValue = "")]
+        public string AiApiKey { get; set; }
+
+        [Parameter("AI Model Name", Group = "AI Agent Settings", DefaultValue = "qwen3.7-flash")]
+        public string AiModelName { get; set; }
+
+        [Parameter("AI Min Confidence (%)", Group = "AI Agent Settings", DefaultValue = 70.0, MinValue = 0.0, MaxValue = 100.0)]
+        public double AiConfidenceThreshold { get; set; }
+
+        [Parameter("AI Timeout (Seconds)", Group = "AI Agent Settings", DefaultValue = 300, MinValue = 5, MaxValue = 600)]
+        public int aiTimeoutSeconds { get; set; }
+
+        [Parameter("Enable Dashboard Telemetry", Group = "AI Agent Settings", DefaultValue = true)]
+        public bool EnableDashboardTelemetry { get; set; }
+
+        [Parameter("Dashboard Server URL", Group = "AI Agent Settings", DefaultValue = "http://127.0.0.1:8181")]
+        public string DashboardServerUrl { get; set; }
+
+        [Parameter("Account Label (optional)", Group = "AI Agent Settings", DefaultValue = "")]
+        public string AccountLabel { get; set; }
+
+        [Parameter("AI Gate Mode (Pre-filter: EMA cross â†’ AI entry)", Group = "AI Agent Settings", DefaultValue = true)]
+        public bool UseAiGateMode { get; set; }
+
+        [Parameter("AI SL Dynamic Spread Multiplier", Group = "AI Agent Settings", DefaultValue = 10.0, MinValue = 1.0)]
+        public double AiSlSpreadMultiplier { get; set; }
+
+        [Parameter("AI SL Manual Min Floor (pips, 0=Auto from Spread)", Group = "AI Agent Settings", DefaultValue = 0.0, MinValue = 0)]
+        public double AiSlMinFloorPips { get; set; }
+        #endregion
+
+        #region Hybrid Event-Driven AI Parameters
+        [Parameter("Enable Event-Driven AI Trigger ?", Group = "Hybrid Event-Driven AI", DefaultValue = true)]
+        public bool EnableEventDrivenAi { get; set; }
+
+        [Parameter("Min Event Cooldown (Seconds)", Group = "Hybrid Event-Driven AI", DefaultValue = 120, MinValue = 30, MaxValue = 600)]
+        public int EventAiCooldownSeconds { get; set; }
+
+        [Parameter("Profit Milestone Trigger (R:R)", Group = "Hybrid Event-Driven AI", DefaultValue = 1.5, MinValue = 0.5, MaxValue = 10.0, Step = 0.5)]
+        public double ProfitMilestoneRr { get; set; }
+
+        [Parameter("Volatility Spike Multiplier (x ATR)", Group = "Hybrid Event-Driven AI", DefaultValue = 1.5, MinValue = 1.0, MaxValue = 5.0, Step = 0.1)]
+        public double VolatilitySpikeAtrMultiplier { get; set; }
+        #endregion
+
+        [Parameter("Calculate on Bar Closed: ", Group = "Initial Setting", DefaultValue = true)]
+        public bool _calculateOnBarClosed { get; set; }
+
+        [Parameter("TradeType - BUY :", Group = "Initial Setting", DefaultValue = true)]
+        public bool enableTradeTypeBuy { get; set; }
+
+        [Parameter("TradeType - SELL : ", Group = "Initial Setting", DefaultValue = true)]
+        public bool enableTradeTypeSELL { get; set; }
+
+        [Parameter("Reverse Condition : ", Group = "Initial Setting", DefaultValue = false)]
+        public bool reverseCondition { get; set; }
+
+        [Parameter("Maximum number of orders allowed to be opened: ", Group = "Initial Setting", DefaultValue = 1)]
+        public int maxPermittedOrder { get; set; }
+
+        [Parameter("Show signal on Chart ? ", Group = "Initial Setting", DefaultValue = false)]
+        public bool showSignal { get; set; }
+
+        [Parameter("Show Indicator on Chart ? ", Group = "Initial Setting", DefaultValue = false)]
+        public bool showIndicator { get; set; }
+
+        [Parameter("Block reopening after manual close until close signal ? ", Group = "Initial Setting", DefaultValue = true)]
+        public bool blockReopenUntilCloseSignal { get; set; }
+        #endregion
+
+        #region Strategy Parameters (Asian Range & Judas Sweep)
+        [Parameter("Asian Session Start (UTC Hour)", Group = "Asian Range & Judas Sweep", DefaultValue = 0, MinValue = 0, MaxValue = 23)]
+        public int asianStartHour { get; set; }
+
+        [Parameter("Asian Session End (UTC Hour)", Group = "Asian Range & Judas Sweep", DefaultValue = 6, MinValue = 0, MaxValue = 23)]
+        public int asianEndHour { get; set; }
+
+        [Parameter("Min Asian Range (% Daily ATR)", Group = "Asian Range & Judas Sweep", DefaultValue = 15.0, MinValue = 5.0, MaxValue = 50.0, Step = 1.0)]
+        public double minAsianRangeDailyAtrPercent { get; set; }
+
+        [Parameter("Max Asian Range (% Daily ATR)", Group = "Asian Range & Judas Sweep", DefaultValue = 60.0, MinValue = 20.0, MaxValue = 100.0, Step = 1.0)]
+        public double maxAsianRangeDailyAtrPercent { get; set; }
+
+        [Parameter("London Killzone Start (UTC Hour)", Group = "Asian Range & Judas Sweep", DefaultValue = 7, MinValue = 0, MaxValue = 23)]
+        public int londonStartHour { get; set; }
+
+        [Parameter("London Killzone End (UTC Hour)", Group = "Asian Range & Judas Sweep", DefaultValue = 10, MinValue = 0, MaxValue = 23)]
+        public int londonEndHour { get; set; }
+
+        [Parameter("NY Killzone Start (UTC Hour)", Group = "Asian Range & Judas Sweep", DefaultValue = 12, MinValue = 0, MaxValue = 23)]
+        public int nyStartHour { get; set; }
+
+        [Parameter("NY Killzone End (UTC Hour)", Group = "Asian Range & Judas Sweep", DefaultValue = 16, MinValue = 0, MaxValue = 23)]
+        public int nyEndHour { get; set; }
+
+        [Parameter("Judas Sweep Buffer (% M15 ATR)", Group = "Asian Range & Judas Sweep", DefaultValue = 20.0, MinValue = 5.0, MaxValue = 100.0, Step = 1.0)]
+        public double sweepBufferM15AtrPercent { get; set; }
+
+        [Parameter("Draw Asian Range Visuals", Group = "Asian Range & Judas Sweep", DefaultValue = true)]
+        public bool drawAsianRangeVisuals { get; set; }
+
+        [Parameter("Fast EMA Period", Group = "Strategy Indicators", DefaultValue = 9, MinValue = 1, MaxValue = 200)]
+        public int fastEmaPeriod { get; set; }
+
+        [Parameter("Slow EMA Period", Group = "Strategy Indicators", DefaultValue = 21, MinValue = 1, MaxValue = 500)]
+        public int slowEmaPeriod { get; set; }
+
+        [Parameter("Enable RSI Filter", Group = "Strategy Indicators", DefaultValue = false)]
+        public bool enableRsiFilter { get; set; }
+
+        [Parameter("RSI Period", Group = "Strategy Indicators", DefaultValue = 14, MinValue = 1, MaxValue = 100)]
+        public int periodRSI { get; set; }
+
+        [Parameter("RSI Overbought Level (Max for Buy)", Group = "Strategy Indicators", DefaultValue = 70.0, MinValue = 1.0, MaxValue = 100.0)]
+        public double rsiOverbought { get; set; }
+
+        [Parameter("RSI Oversold Level (Min for Sell)", Group = "Strategy Indicators", DefaultValue = 30.0, MinValue = 1.0, MaxValue = 100.0)]
+        public double rsiOversold { get; set; }
+        #endregion
+
+        #region News Filter Parameters
+        [Parameter("Enable Auto News Filter ?", Group = "News Filter", DefaultValue = true)]
+        public bool enableNewsFilter { get; set; }
+
+        [Parameter("Pause Before High News (Mins)", Group = "News Filter", DefaultValue = 30, MinValue = 5)]
+        public int pauseBeforeNewsMins { get; set; }
+
+        [Parameter("Pause After High News (Mins)", Group = "News Filter", DefaultValue = 30, MinValue = 5)]
+        public int pauseAfterNewsMins { get; set; }
+
+        [Parameter("Filter High Impact News Only", Group = "News Filter", DefaultValue = true)]
+        public bool highImpactOnly { get; set; }
+
+        [Parameter("Close Open Positions Before High News ?", Group = "News Filter", DefaultValue = false)]
+        public bool closePositionsBeforeNews { get; set; }
+        #endregion
+
+        #region Setting Stop Loss and Take Profit
+        private string _lastAgentReason = "";
+
+        [Parameter("Enable StopLoss & TakeProfit to % ?", DefaultValue = true, Group = "Setting Stop Loss and Take Profit")]
+        public bool SLTPpercentage { get; set; }
+
+        [Parameter("Take Profit [%]", DefaultValue = 3.0, Group = "Setting Stop Loss and Take Profit", MinValue = 0.001)]
+        public double takeprofitPercentage { get; set; }
+
+        [Parameter("Stop Loss [%]", DefaultValue = 1.5, Group = "Setting Stop Loss and Take Profit", MinValue = 0.001)]
+        public double stoplossPercentage { get; set; }
+
+        [Parameter("Take Profit [pips]", DefaultValue = 300, Group = "Setting Stop Loss and Take Profit")]
+        public double takeprofitPip { get; set; }
+
+        [Parameter("Stop Loss [pips]", DefaultValue = 150, Group = "Setting Stop Loss and Take Profit")]
+        public double stoplossPip { get; set; }
+        #endregion
+
+        #region Setting Trading Volume
+        [Parameter("[Lots] Maximum allowed Volume per order", Group = "Setting Trading Volume", DefaultValue = 10)]
+        public double maxVol { get; set; }
+
+        [Parameter("Enable fixed Volume ?", Group = "Setting Trading Volume", DefaultValue = false)]
+        public bool enableFixedVol { get; set; }
+
+        [Parameter("[Lots] Fixed Volume: ", Group = "Setting Trading Volume", DefaultValue = 0.01)]
+        public double _fixedVolLots { get; set; }
+
+        [Parameter("Enable Volume by % risk of account ?", Group = "Setting Trading Volume", DefaultValue = true)]
+        public bool _voltoAccount { get; set; }
+
+        [Parameter("[%] Risk of account", Group = "Setting Trading Volume", DefaultValue = 1.0, MinValue = 0.1, MaxValue = 100, Step = 0.1)]
+        public double riskFactor { get; set; }
+        #endregion
+
+        #region High-Watermark Equity Drawdown Protection (Circuit Breaker)
+        [Parameter("Enable High-Watermark Equity Protection ?", Group = "Equity Protection (Circuit Breaker)", DefaultValue = false)]
+        public bool enableEquityProtection { get; set; }
+
+        [Parameter("Max Equity Drawdown Threshold (%)", Group = "Equity Protection (Circuit Breaker)", DefaultValue = 15.0, MinValue = 1.0, MaxValue = 80.0)]
+        public double maxEquityDDPercent { get; set; }
+
+        [Parameter("Risk Factor Reduction Ratio", Group = "Equity Protection (Circuit Breaker)", DefaultValue = 0.5, MinValue = 0.1, MaxValue = 1.0)]
+        public double ddRiskReductionRatio { get; set; }
+        #endregion
+
+        #region Setting Trailing Stop Loss (TSL)
+        [Parameter("Enable Trailing Stop", Group = "Setting Trailing Stop Loss (TSL)", DefaultValue = false)]
+        public bool enableTrailingStop { get; set; }
+
+        [Parameter("Trigger point of TSL (pips)", Group = "Setting Trailing Stop Loss (TSL)", DefaultValue = 300)]
+        public double TrailingStopTrigger { get; set; }
+
+        [Parameter("Distance of TSL (pips)", Group = "Setting Trailing Stop Loss (TSL)", DefaultValue = 150)]
+        public double TrailingStopStep { get; set; }
+
+        [Parameter("Enable AI Adjust Trailing Stop?", Group = "Setting Trailing Stop Loss (TSL)", DefaultValue = true)]
+        public bool enableAiAdjustTrailing { get; set; }
+
+        [Parameter("AI Adjust Trailing Threshold (%)", Group = "Setting Trailing Stop Loss (TSL)", DefaultValue = 80.0, MinValue = 10.0, MaxValue = 100.0, Step = 5.0)]
+        public double aiAdjustTrailingThresholdPercent { get; set; }
+        #endregion
+
+        #region Setting Break Even Parameters
+        [Parameter("Enable Moving Stoploss to break even price? ", Group = "Setting Break Even", DefaultValue = false)]
+        public bool enableBreakEvenPrice { get; set; }
+
+        [Parameter("Break Even Trigger Mode", Group = "Setting Break Even", DefaultValue = BreakEvenTriggerMode.Risk_Reward_Ratio)]
+        public BreakEvenTriggerMode breakEvenMode { get; set; }
+
+        [Parameter("Trigger Point (R:R Ratio)", Group = "Setting Break Even", DefaultValue = 2.0, MinValue = 0.3, MaxValue = 10.0, Step = 0.1)]
+        public double breakEvenRrTrigger { get; set; }
+
+        [Parameter("Trigger point of break even [pips]", Group = "Setting Break Even", DefaultValue = 250, MinValue = 1)]
+        public double breakEvenTrigger { get; set; }
+
+        [Parameter("Break Even Extra Buffer [pips]", Group = "Setting Break Even", DefaultValue = 2.0, MinValue = 0.0, MaxValue = 50.0, Step = 0.5)]
+        public double breakEvenExtraPips { get; set; }
+
+        [Parameter("Enable Trailing Stop after Break Even ? ", Group = "Setting Break Even", DefaultValue = false)]
+        public bool enableTrailingStopFromBreakEven { get; set; }
+        #endregion
+
+        #region Anti-FOMO & Candle Wick Retracement Parameters
+        [Parameter("Enable Wick Retracement Hunting?", Group = "Anti-FOMO & Candle Wick Retracement", DefaultValue = true)]
+        public bool enableWickRetracementHunting { get; set; }
+
+        [Parameter("Tolerance Mode", Group = "Anti-FOMO & Candle Wick Retracement", DefaultValue = AntiFomoToleranceMode.Dynamic_ATR_Percent)]
+        public AntiFomoToleranceMode antiFomoToleranceMode { get; set; }
+
+        [Parameter("Slippage Tolerance (% of ATR)", Group = "Anti-FOMO & Candle Wick Retracement", DefaultValue = 10.0, MinValue = 1.0, MaxValue = 50.0, Step = 0.5)]
+        public double slippageToleranceAtrPercent { get; set; }
+
+        [Parameter("Pullback Target Buffer (% of ATR)", Group = "Anti-FOMO & Candle Wick Retracement", DefaultValue = 5.0, MinValue = 0.0, MaxValue = 30.0, Step = 0.5)]
+        public double pullbackBufferAtrPercent { get; set; }
+
+        [Parameter("Fixed Slippage (pips - fallback)", Group = "Anti-FOMO & Candle Wick Retracement", DefaultValue = 5.0, MinValue = 0.5, MaxValue = 100.0, Step = 0.5)]
+        public double slippageTolerancePips { get; set; }
+
+        [Parameter("Fixed Pullback Buffer (pips - fallback)", Group = "Anti-FOMO & Candle Wick Retracement", DefaultValue = 2.0, MinValue = 0.0, MaxValue = 50.0, Step = 0.5)]
+        public double pullbackBufferPips { get; set; }
+
+        [Parameter("Max Staging Wait (minutes)", Group = "Anti-FOMO & Candle Wick Retracement", DefaultValue = 8, MinValue = 1, MaxValue = 60)]
+        public int maxStagingWaitMinutes { get; set; }
+
+        [Parameter("Cancel If TP Reached (%)", Group = "Anti-FOMO & Candle Wick Retracement", DefaultValue = 50.0, MinValue = 10.0, MaxValue = 90.0, Step = 5.0)]
+        public double cancelIfTpReachedPercent { get; set; }
+        #endregion
+
+        #region Setting DCA Parameters
+        [Parameter("Enable DCA mode ?", Group = "Setting DCA", DefaultValue = false)]
+        public bool dcaEnable { get; set; }
+
+        [Parameter("Set SL,TP to first order ?", Group = "Setting DCA", DefaultValue = true)]
+        public bool setSLTPtoFirsOrder { get; set; }
+
+        [Parameter("Enable Averaging down ?", Group = "Setting DCA", DefaultValue = true)]
+        public bool dcaDown { get; set; }
+
+        [Parameter("Enable Averaging up ?", Group = "Setting DCA", DefaultValue = false)]
+        public bool dcaUp { get; set; }
+
+        [Parameter("Only close a deal when hit stoploss or takeprofit ?", Group = "Setting DCA", DefaultValue = false)]
+        public bool dca_closeDealbySLTP { get; set; }
+
+        [Parameter("DCA with fixed volume?", Group = "Setting DCA", DefaultValue = false)]
+        public bool dcaEnableFixVol { get; set; }
+
+        [Parameter("DCA with increment volume?", Group = "Setting DCA", DefaultValue = false)]
+        public bool dcaEnableIncreaseVol { get; set; }
+
+        [Parameter("DCA with double Volume?", Group = "Setting DCA", DefaultValue = true)]
+        public bool dcaEnableDoubleVol { get; set; }
+
+        [Parameter("Price range for DCA [pips]", Group = "Setting DCA", DefaultValue = 200)]
+        public double dca_Distance { get; set; }
+
+        [Parameter("Consider condition of Bot's strategy ?", Group = "Setting DCA", DefaultValue = false)]
+        public bool dcaEnableBotCondition { get; set; }
+
+        [Parameter("Close single order when profit reaches threshold?", Group = "Setting DCA", DefaultValue = false)]
+        public bool dca_enableProfittoClose_singleOrder { get; set; }
+
+        [Parameter("Profit threshold to close single order [usd]", Group = "Setting DCA", DefaultValue = 10)]
+        public double dca_profittoClose_singleOder { get; set; }
+
+        [Parameter("Close all orders when profit reaches threshold?", Group = "Setting DCA", DefaultValue = false)]
+        public bool dca_enableProfittoClose { get; set; }
+
+        [Parameter("Profit threshold to close all orders [usd]", Group = "Setting DCA", DefaultValue = 100)]
+        public double profittoClose { get; set; }
+
+        [Parameter("Close when profit pulls back from peak?", Group = "Setting DCA", DefaultValue = true)]
+        public bool dcaPullBackToClose { get; set; }
+
+        [Parameter("Pullback distance [pips]", Group = "Setting DCA", DefaultValue = 300)]
+        public double dcaPullBackPips { get; set; }
+
+        [Parameter("Enable profit percentage to close all ?", Group = "Setting DCA", DefaultValue = true)]
+        public bool dcaProfitPercentageToCloseAll { get; set; }
+
+        [Parameter("Profit percentage to close all [%]", Group = "Setting DCA", DefaultValue = 100)]
+        public double dcaProfitPercent { get; set; }
+        #endregion
+
+        #region Telegram Integration
+        [Parameter("Enable Telegram Alerts", Group = "Telegram Integration", DefaultValue = true)]
+        public bool enableTelegramAlerts { get; set; }
+
+        [Parameter("Send AI ADJUST Alerts?", Group = "Telegram Integration", DefaultValue = false)]
+        public bool sendAiAdjustAlerts { get; set; } = false;
+
+        [Parameter("Send Anti-FOMO Staging Alerts?", Group = "Telegram Integration", DefaultValue = false)]
+        public bool sendAntiFomoStagedAlerts { get; set; } = false;
+
+        [Parameter("Telegram Bot Token", Group = "Telegram Integration", DefaultValue = "")]
+        public string telegramBotToken { get; set; }
+
+        [Parameter("Telegram Chat ID", Group = "Telegram Integration", DefaultValue = "")]
+        public string telegramChatId { get; set; }
+
+        [Parameter("Send Chart Screenshot on Signal", Group = "Telegram Integration", DefaultValue = false)]
+        public bool sendChartScreenshot { get; set; }
+        #endregion
+
+        #region UI & Info Panel
+        [Parameter("Show Info Panel on Chart", Group = "UI & Info Panel", DefaultValue = true)]
+        public bool showInfoPanel { get; set; }
+
+        [Parameter("Local Time UTC Offset (Hours)", Group = "UI & Info Panel", DefaultValue = 7, MinValue = -12, MaxValue = 14)]
+        public double customUTCOffset { get; set; }
+        #endregion
+
+        #region In-Code Expiry & Licensing
+        private readonly DateTime ExpiryDate = new DateTime(2026, 12, 30);
+        private readonly DateTime StartDate = new DateTime(2024, 1, 1);
+        private readonly bool Unlimited_License = true;
+        private bool _isExpired = false;
+        #endregion
+
+        #region Fields
+        private bool _waitingForCloseSignalBuy = false;
+        private bool _waitingForCloseSignalSell = false;
+
+        private bool TPhitBuy = false;
+        private bool TPhitSell = false;
+
+        private bool _buyCondition = false;
+        private bool _sellCondition = false;
+        private bool _closeBuyCondition = false;
+        private bool _closeSellCondition = false;
+
+        private DateTime _lastStopLossTime;
+        private bool _isWaiting = false;
+
+        private double _asianHigh = 0;
+        private double _asianLow = 0;
+        private double _asianRangePips = 0;
+        private DateTime _asianSessionDate = DateTime.MinValue;
+#pragma warning disable CS0414
+        private bool _highSwept = false;
+        private bool _lowSwept = false;
+#pragma warning restore CS0414
+        private string _activeKillzone = "Outside Killzones";
+
+        private MovingAverage fastEma;
+        private MovingAverage slowEma;
+        private RelativeStrengthIndex rsi;
+        private AverageTrueRange atr;
+
+        private Bars _h1Bars;
+        private Bars _h4Bars;
+        private MovingAverage _h1FastEma;
+        private MovingAverage _h1SlowEma;
+        private RelativeStrengthIndex _h1Rsi;
+        private MovingAverage _h4FastEma;
+        private MovingAverage _h4SlowEma;
+        private RelativeStrengthIndex _h4Rsi;
+        private Bars _d1Bars;
+        private AverageTrueRange _d1Atr;
+
+        private double takeprofit;
+        private double stoploss;
+        private double _calculatedVol = 0.01;
+
+        private double _peakEquity = 0;
+        private double _currentDrawdownPercent = 0;
+        private bool _isCircuitBreakerActive = false;
+
+        private Dictionary<int, bool> _movedToBreakEven = new Dictionary<int, bool>();
+        private Dictionary<int, double> _initialSlDistances = new Dictionary<int, double>();
+        private DateTime _lastEventDrivenAiQueryTime = DateTime.MinValue;
+        private HashSet<long> _positionsMilestoneTriggered = new HashSet<long>();
+
+        private enum StagedActionState { None, Armed_Buy, Armed_Sell }
+        private StagedActionState _stagedState = StagedActionState.None;
+        private AgentDecision _stagedDecision = null;
+        private DateTime _stagedBarOpenTime = DateTime.MinValue;
+        private DateTime _stagedExpiryTime = DateTime.MinValue;
+        private double _stagedTargetPullbackPrice = 0.0;
+        private double _stagedVolumeUnits = 0.0;
+        private double _stagedSlPips = 0.0;
+        private double _stagedTpPips = 0.0;
+
+        private Position dcaStartPosition = null;
+        private Position dcaEndPosition_down = null;
+        private Position dcaEndPosition_up = null;
+        private DateTime dcalastEntryTime;
+
+        public class NewsEvent
+        {
+            public string Title { get; set; }
+            public string Country { get; set; }
+            public DateTime Date { get; set; } // UTC DateTime
+            public string Impact { get; set; }
+        }
+
+        private readonly List<NewsEvent> _newsEvents = new List<NewsEvent>();
+        private readonly object _newsLock = new object();
+        private DateTime _lastNewsFetchTime = DateTime.MinValue;
+        private DateTime _lastNewsFetchAttempt = DateTime.MinValue;
+        private DateTime _lastTickNewsCheckTime = DateTime.MinValue;
+        #endregion
+
+        #region AI Agent Fields
+        private HttpClient _httpClient;
+        private int _consecutiveAiFailures = 0;
+        private DateTime _aiCooldownUntil = DateTime.MinValue;
+        // Pre-filter gate state
+        private string _allowedAiDirection = "NONE"; // "BUY", "SELL", "MANAGE_ONLY", "NONE"
+        private string _traditionalSignal   = "NONE"; // "EMA_CROSS_BUY", "EMA_CROSS_SELL", "NONE"
+        private int    _barsSinceCross      = 0;      // bars elapsed since last EMA cross
+        private int    _lastCrossBarIndex   = -1;     // bar index of most recent cross
+        #endregion
+
+        #region Robot Events
+        protected override void OnStart()
+        {
+            try { InitializeLicense(); } catch (Exception ex) { Print($"[License Init Warning] {ex.Message}"); }
+            if (_isExpired) return;
+
+            try { InitializeNewsFilter(); } catch (Exception ex) { Print($"[News Init Warning] {ex.Message}"); }
+            try { InitializeRiskManagement(); } catch (Exception ex) { Print($"[Risk Init Warning] {ex.Message}"); }
+            try { InitializeStrategyIndicators(); } catch (Exception ex) { Print($"[Indicators Init Warning] {ex.Message}"); }
+            try { InitializeUI(); } catch (Exception ex) { Print($"[UI Init Warning] {ex.Message}"); }
+
+            _httpClient = new HttpClient();
+            _httpClient.Timeout = TimeSpan.FromSeconds(aiTimeoutSeconds > 0 ? aiTimeoutSeconds : 300);
+            Print($"cBot Agent Template HTTP calls ENABLED in mode: {RunningMode} | AI Mode: {AiMode}");
+
+            Positions.Closed += OnPositionsClosed;
+            Positions.Opened += OnPositionsOpened;
+
+            _lastStopLossTime = DateTime.MinValue;
+            _isWaiting = false;
+            _consecutiveAiFailures = 0;
+            _aiCooldownUntil = DateTime.MinValue;
+
+            if (AiMode == AiConnectionMode.Direct_OpenRouter_DashScope)
+            {
+                LogApiKeyResolution();
+            }
+
+            Print(label + " Started successfully. Bot is running...");
+
+            bool hasOpenPos = Positions.FindAll(label, SymbolName).Length > 0;
+            bool inKillzone = IsGoldenKillzone(Server.Time, out _activeKillzone);
+            if (hasOpenPos || inKillzone)
+            {
+                string startupDir = (hasOpenPos && !inKillzone) ? "MANAGE_ONLY" : _allowedAiDirection;
+                _ = SendStateToAgentAsync(startupDir);
+            }
+            else
+            {
+                Print($"[Session Guard] Started outside Golden Killzones ({_activeKillzone}) with 0 open positions. Initial AI query skipped until next Golden Killzone.");
+            }
+        }
+
+        protected override void OnBarClosed()
+        {
+            if (_isExpired) return;
+
+            CheckNewsEvents();
+
+            // Track Asian session range & golden killzones
+            TrackAsianSession(Server.Time);
+            bool inKillzone = IsGoldenKillzone(Server.Time, out _activeKillzone);
+
+            // Evaluate Judas Sweep signals (respecting reverseCondition)
+            CheckJudasSweep(out bool sweepBuy, out bool sweepSell, out string sweepSignal);
+            bool rawBuy  = !reverseCondition ? sweepBuy  : sweepSell;
+            bool rawSell = !reverseCondition ? sweepSell : sweepBuy;
+
+            // ── Update pre-filter gate state ───────────────────────────────────
+            bool isNewsBlocked = IsNewsBlackoutActive(out string newsBlockReason, out _);
+
+            if (!inKillzone)
+            {
+                _allowedAiDirection = "MANAGE_ONLY";
+                _traditionalSignal  = "NONE";
+                _barsSinceCross     = 999;
+            }
+            else if (isNewsBlocked)
+            {
+                _allowedAiDirection = "MANAGE_ONLY";
+                _traditionalSignal  = "NONE";
+                _barsSinceCross     = 999;
+                Print($"[News Filter Active] Gate locked to MANAGE_ONLY: {newsBlockReason}");
+            }
+            else if (rawBuy && !rawSell)
+            {
+                _allowedAiDirection = "BUY";
+                _traditionalSignal  = sweepSignal;
+                _lastCrossBarIndex  = Bars.Count - 1;
+                _barsSinceCross     = 0;
+            }
+            else if (rawSell && !rawBuy)
+            {
+                _allowedAiDirection = "SELL";
+                _traditionalSignal  = sweepSignal;
+                _lastCrossBarIndex  = Bars.Count - 1;
+                _barsSinceCross     = 0;
+            }
+            else if (_lastCrossBarIndex >= 0)
+            {
+                _barsSinceCross = Bars.Count - 1 - _lastCrossBarIndex;
+            }
+            else
+            {
+                _allowedAiDirection = "MANAGE_ONLY";
+                _traditionalSignal  = "NONE";
+            }
+            // ───────────────────────────────────────────────────────────────────
+
+            if (UseAiGateMode && _calculateOnBarClosed)
+            {
+                // GATE MODE: Traditional logic handles CLOSE signals only.
+                // AI Agent is the sole authority for new ENTRY decisions.
+                bool rawCloseBuy  = !reverseCondition ? closeBuyCondition()  : closeSellCondition();
+                bool rawCloseSell = !reverseCondition ? closeSellCondition() : closeBuyCondition();
+
+                if (rawCloseBuy && buyPositions(label).Length > 0)
+                {
+                    ClosePositions(label, TradeType.Buy);
+                    _waitingForCloseSignalBuy = false;
+                }
+                if (rawCloseSell && sellPositions(label).Length > 0)
+                {
+                    ClosePositions(label, TradeType.Sell);
+                    _waitingForCloseSignalSell = false;
+                }
+            }
+            else if (!UseAiGateMode && _calculateOnBarClosed)
+            {
+                // LEGACY MODE: Traditional logic handles everything directly (backward compatible)
+                _buyCondition       = rawBuy;
+                _sellCondition      = rawSell;
+                _closeBuyCondition  = !reverseCondition ? closeBuyCondition()  : closeSellCondition();
+                _closeSellCondition = !reverseCondition ? closeSellCondition() : closeBuyCondition();
+                createOrder();
+                resetConditions();
+            }
+
+            ProcessBreakEvenLogic();
+            ProcessDCALogic();
+            UpdateUIPanel();
+
+            if (_httpClient != null)
+            {
+                bool hasOpenPos   = Positions.FindAll(label, SymbolName).Length > 0;
+                // Gate Mode: call AI only when cross is fresh (<=3 bars) AND within Golden Killzone OR managing open positions
+                bool gateOpen     = UseAiGateMode && inKillzone && _barsSinceCross <= 3 && _allowedAiDirection != "NONE" && _allowedAiDirection != "MANAGE_ONLY";
+                bool shouldCallAi = !UseAiGateMode || gateOpen || hasOpenPos;
+
+                if (shouldCallAi)
+                {
+                    // Pass gate direction; use MANAGE_ONLY when only managing existing positions or outside killzone
+                    string contextDir = (hasOpenPos && (!inKillzone || !gateOpen)) ? "MANAGE_ONLY" : _allowedAiDirection;
+                    _ = SendStateToAgentAsync(contextDir);
+                }
+            }
+        }
+
+        protected override void OnTick()
+        {
+            if (_isExpired) return;
+
+            if (enableNewsFilter && (DateTime.UtcNow - _lastTickNewsCheckTime).TotalSeconds >= 15)
+            {
+                _lastTickNewsCheckTime = DateTime.UtcNow;
+                CheckNewsEvents();
+            }
+
+            if (enableTrailingStop || enableTrailingStopFromBreakEven) { TrailingStop(); }
+
+            ProcessBreakEvenLogic();
+            ProcessDCALogic();
+            CheckEventDrivenAiTriggers();
+            ProcessStagedOrderExecution();
+
+            if (_isWaiting && Server.Time >= _lastStopLossTime.AddSeconds(30))
+            {
+                _isWaiting = false;
+            }
+
+            if (!_calculateOnBarClosed && _isWaiting == false)
+            {
+                if (!reverseCondition)
+                {
+                    _buyCondition = buyCondition();
+                    _sellCondition = sellCondition();
+                    _closeBuyCondition = closeBuyCondition();
+                    _closeSellCondition = closeSellCondition();
+                }
+                else
+                {
+                    _buyCondition = sellCondition();
+                    _sellCondition = buyCondition();
+                    _closeBuyCondition = closeSellCondition();
+                    _closeSellCondition = closeBuyCondition();
+                }
+
+                createOrder();
+                resetConditions();
+            }
+        }
+
+        private void resetConditions()
+        {
+            _buyCondition = false;
+            _sellCondition = false;
+            _closeBuyCondition = false;
+            _closeSellCondition = false;
+        }
+
+        private void resetFlagsforManualClosed()
+        {
+            _waitingForCloseSignalBuy = false;
+            _waitingForCloseSignalSell = false;
+            _movedToBreakEven.Clear();
+            _initialSlDistances.Clear();
+        }
+
+        private void createOrder()
+        {
+            if (_closeBuyCondition && buyPositions(label).Length > 0)
+            {
+                ClosePositions(label, TradeType.Buy);
+                _waitingForCloseSignalBuy = false;
+            }
+
+            if (_closeSellCondition && sellPositions(label).Length > 0)
+            {
+                ClosePositions(label, TradeType.Sell);
+                _waitingForCloseSignalSell = false;
+            }
+
+            if (blockReopenUntilCloseSignal && (_waitingForCloseSignalBuy || _waitingForCloseSignalSell))
+            {
+                return;
+            }
+
+            if (_buyCondition || _sellCondition)
+            {
+                if (!IsGoldenKillzone(Server.Time, out string currentKz))
+                {
+                    Print($"[Session Guard Block] createOrder() rejected! Current time {Server.Time:HH:mm:ss} UTC is outside Golden Killzones ({currentKz}). New entries strictly prohibited.");
+                    return;
+                }
+
+                if (IsNewsBlackoutActive(out string blockReason, out _))
+                {
+                    Print($"[News Filter Guard Block] createOrder() rejected! Active blackout: {blockReason}");
+                    return;
+                }
+            }
+
+            if (_buyCondition && TPhitBuy == false)
+            {
+                if (enableTradeTypeBuy && buyPositions(label).Length < maxPermittedOrder)
+                {
+                    TimeSpan timeDifference = Server.Time - dcalastEntryTime;
+                    if (timeDifference.TotalSeconds >= 2 && _isWaiting == false)
+                    {
+                        CalculateSLTP(TradeType.Buy, Symbol.Bid);
+
+                        var result = ExecuteMarketOrder(TradeType.Buy, SymbolName, _calculatedVol, label, stoploss, takeprofit);
+                        if (result.IsSuccessful)
+                        {
+                            dcalastEntryTime = result.Position.EntryTime;
+                            if (_httpClient == null && !string.IsNullOrWhiteSpace(telegramBotToken))
+                            {
+                                _ = SendTelegramAlertAsync($"🚀 <b>[Trading Agent Hub] Position Opened</b>\n• Tài khoản: <code>{Account.Number}</code>\n• Bot: <code>{label}</code>\n• Symbol: <b>{SymbolName}</b> (🟢 BUY)\n• Khối lượng: <b>{_calculatedVol / Symbol.LotSize:F2} lots</b> @ Entry: <code>{result.Position.EntryPrice}</code>\n• Stop Loss: <b>{result.Position.StopLoss:F2} ({stoploss:F0} pips)</b> | Take Profit: <b>{result.Position.TakeProfit:F2} ({takeprofit:F0} pips)</b>\n• Lý do: <i>Strategy Indicator Buy Signal</i>");
+                                _ = CaptureAndSendChartScreenshotAsync($"Chart screenshot for BUY entry at {result.Position.EntryPrice}");
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (_sellCondition && TPhitSell == false)
+            {
+                if (enableTradeTypeSELL && sellPositions(label).Length < maxPermittedOrder)
+                {
+                    TimeSpan timeDifference = Server.Time - dcalastEntryTime;
+                    if (timeDifference.TotalSeconds >= 2 && _isWaiting == false)
+                    {
+                        CalculateSLTP(TradeType.Sell, Symbol.Ask);
+
+                        var result = ExecuteMarketOrder(TradeType.Sell, SymbolName, _calculatedVol, label, stoploss, takeprofit);
+                        if (result.IsSuccessful)
+                        {
+                            dcalastEntryTime = result.Position.EntryTime;
+                            if (_httpClient == null && !string.IsNullOrWhiteSpace(telegramBotToken))
+                            {
+                                _ = SendTelegramAlertAsync($"🚀 <b>[Trading Agent Hub] Position Opened</b>\n• Tài khoản: <code>{Account.Number}</code>\n• Bot: <code>{label}</code>\n• Symbol: <b>{SymbolName}</b> (🔴 SELL)\n• Khối lượng: <b>{_calculatedVol / Symbol.LotSize:F2} lots</b> @ Entry: <code>{result.Position.EntryPrice}</code>\n• Stop Loss: <b>{result.Position.StopLoss:F2} ({stoploss:F0} pips)</b> | Take Profit: <b>{result.Position.TakeProfit:F2} ({takeprofit:F0} pips)</b>\n• Lý do: <i>Strategy Indicator Sell Signal</i>");
+                                _ = CaptureAndSendChartScreenshotAsync($"Chart screenshot for SELL entry at {result.Position.EntryPrice}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        private Position[] buyPositions(string label)
+        {
+            return Positions.FindAll(label, SymbolName, TradeType.Buy);
+        }
+
+        private Position[] sellPositions(string label)
+        {
+            return Positions.FindAll(label, SymbolName, TradeType.Sell);
+        }
+
+        private void ClosePositions(string label, TradeType tradeType)
+        {
+            foreach (var position in Positions.FindAll(label, SymbolName))
+            {
+                if (position.TradeType == tradeType)
+                {
+                    ClosePosition(position);
+                }
+            }
+        }
+
+        private void OnPositionsOpened(PositionOpenedEventArgs args)
+        {
+            Position openedPosition = args.Position;
+            if (openedPosition.SymbolName != SymbolName || openedPosition.Label != label) return;
+
+            // Track initial Stop Loss distance for AI Adjust Trailing Stop evaluation
+            if (openedPosition.StopLoss.HasValue && openedPosition.EntryPrice > 0)
+            {
+                _initialSlDistances[openedPosition.Id] = Math.Abs(openedPosition.EntryPrice - openedPosition.StopLoss.Value);
+            }
+            else
+            {
+                _initialSlDistances[openedPosition.Id] = (stoplossPip > 0 ? stoplossPip : 100) * Symbol.PipSize;
+            }
+
+            if (_httpClient != null)
+            {
+                _ = ReportPositionOpen(openedPosition, stoplossPip, takeprofitPip, _lastAgentReason);
+                _lastAgentReason = "";
+                SendLiveTickTelemetry(force: true);
+            }
+            dcalastEntryTime = openedPosition.EntryTime;
+            resetFlagsforManualClosed();
+        }
+
+        private void OnPositionsClosed(PositionClosedEventArgs args)
+        {
+            Position closedPosition = args.Position;
+            if (closedPosition.SymbolName != SymbolName || closedPosition.Label != label) return;
+
+            _positionsMilestoneTriggered.Remove(closedPosition.Id);
+            _movedToBreakEven.Remove(closedPosition.Id);
+            _initialSlDistances.Remove(closedPosition.Id);
+
+            double exitPrice = closedPosition.TradeType == TradeType.Buy ? Symbol.Bid : Symbol.Ask;
+            if (args.Reason == PositionCloseReason.TakeProfit && closedPosition.TakeProfit.HasValue)
+                exitPrice = closedPosition.TakeProfit.Value;
+            else if (args.Reason == PositionCloseReason.StopLoss && closedPosition.StopLoss.HasValue)
+                exitPrice = closedPosition.StopLoss.Value;
+
+            if (_httpClient != null)
+            {
+                _ = ReportPositionClosed(closedPosition, closedPosition.NetProfit, args.Reason.ToString(), exitPrice, closedPosition.Pips);
+                SendLiveTickTelemetry(force: true);
+            }
+
+            // Send direct alert only when running standalone without Server Hub (which handles reporting centrally)
+            if (enableTelegramAlerts && _httpClient == null && !string.IsNullOrWhiteSpace(telegramBotToken))
+            {
+                string icon = closedPosition.NetProfit >= 0 ? "💰" : "🔻";
+                string sign = closedPosition.NetProfit >= 0 ? "+$" : "-$";
+                _ = SendTelegramAlertAsync($"{icon} <b>[Trading Agent Hub] Position Closed</b>\n• Tài khoản: <code>{Account.Number}</code>\n• Bot: <code>{label}</code>\n• Symbol: <b>{SymbolName}</b> ({closedPosition.TradeType})\n• Khối lượng: <b>{closedPosition.VolumeInUnits / Symbol.LotSize:F2} lots</b>\n• Giá: <code>{closedPosition.EntryPrice:F2}</code> ➔ <code>{exitPrice:F2}</code>\n• Net PnL: <b>{sign}{Math.Abs(closedPosition.NetProfit):F2}</b> ({closedPosition.Pips:F1} pips)\n• Lý do: <b>{args.Reason}</b>\n• Số dư: ${Account.Balance:F2} | Equity: ${Account.Equity:F2}");
+            }
+
+            if (args.Reason == PositionCloseReason.Closed)
+            {
+                if (closedPosition.TradeType == TradeType.Buy && _closeBuyCondition == false)
+                {
+                    _waitingForCloseSignalBuy = true;
+                }
+                else if (closedPosition.TradeType == TradeType.Sell && _closeSellCondition == false)
+                {
+                    _waitingForCloseSignalSell = true;
+                }
+                else
+                {
+                    resetFlagsforManualClosed();
+                }
+            }
+
+            if (args.Reason == PositionCloseReason.TakeProfit)
+            {
+                if (closedPosition.TradeType == TradeType.Sell)
+                {
+                    TPhitBuy = false;
+                    TPhitSell = true;
+                }
+                else
+                {
+                    TPhitBuy = true;
+                    TPhitSell = false;
+                }
+                resetFlagsforManualClosed();
+            }
+
+            if (args.Reason == PositionCloseReason.StopLoss)
+            {
+                resetFlagsforManualClosed();
+                _lastStopLossTime = Server.Time;
+                _isWaiting = true;
+            }
+        }
+
+        protected override void OnStop()
+        {
+            ResetStagedOrder();
+            Print(label + " Stopped.");
+        }
+        #endregion
+
+        #region License Management
+        private void InitializeLicense()
+        {
+            if (Unlimited_License)
+            {
+                _isExpired = false;
+                Print("[License] Running in Unlimited Mode.");
+                return;
+            }
+
+            DateTime now = DateTime.UtcNow;
+            if (now > ExpiryDate || now < StartDate)
+            {
+                _isExpired = true;
+                Print($"[License Error] cBot license expired on {ExpiryDate:yyyy-MM-dd}. Stopping execution.");
+                DrawExpiryNoticeOnChart();
+                Stop();
+            }
+            else
+            {
+                _isExpired = false;
+                TimeSpan remaining = ExpiryDate - now;
+                Print($"[License Valid] License valid until {ExpiryDate:yyyy-MM-dd}. Remaining days: {remaining.TotalDays:F1}");
+            }
+        }
+
+        private void DrawExpiryNoticeOnChart()
+        {
+            if (Chart != null)
+            {
+                Chart.DrawStaticText("ExpiryNotice", "BOT LICENSE EXPIRED!", VerticalAlignment.Center, HorizontalAlignment.Center, Color.Red);
+            }
+        }
+        #endregion
+
+        #region Strategy Indicators & Signal Conditions (EMA Cross Strategy)
+        private void InitializeStrategyIndicators()
+        {
+            fastEma = Indicators.MovingAverage(Bars.ClosePrices, fastEmaPeriod, MovingAverageType.Exponential);
+            slowEma = Indicators.MovingAverage(Bars.ClosePrices, slowEmaPeriod, MovingAverageType.Exponential);
+            rsi = Indicators.RelativeStrengthIndex(Bars.ClosePrices, periodRSI);
+            atr = Indicators.AverageTrueRange(14, MovingAverageType.Exponential);
+
+            try
+            {
+                _h1Bars = MarketData.GetBars(TimeFrame.Hour);
+                if (_h1Bars != null)
+                {
+                    _h1FastEma = Indicators.MovingAverage(_h1Bars.ClosePrices, 9, MovingAverageType.Exponential);
+                    _h1SlowEma = Indicators.MovingAverage(_h1Bars.ClosePrices, 21, MovingAverageType.Exponential);
+                    _h1Rsi = Indicators.RelativeStrengthIndex(_h1Bars.ClosePrices, 14);
+                }
+            }
+            catch (Exception ex)
+            {
+                Print($"[MTF Init Notice] H1 Bars initialization: {ex.Message}");
+            }
+
+            try
+            {
+                _h4Bars = MarketData.GetBars(TimeFrame.Hour4);
+                if (_h4Bars != null)
+                {
+                    _h4FastEma = Indicators.MovingAverage(_h4Bars.ClosePrices, 9, MovingAverageType.Exponential);
+                    _h4SlowEma = Indicators.MovingAverage(_h4Bars.ClosePrices, 21, MovingAverageType.Exponential);
+                    _h4Rsi = Indicators.RelativeStrengthIndex(_h4Bars.ClosePrices, 14);
+                }
+            }
+            catch (Exception ex)
+            {
+                Print($"[MTF Init Notice] H4 Bars initialization: {ex.Message}");
+            }
+
+            try
+            {
+                _d1Bars = MarketData.GetBars(TimeFrame.Daily);
+                if (_d1Bars != null)
+                {
+                    _d1Atr = Indicators.AverageTrueRange(_d1Bars, 14, MovingAverageType.Exponential);
+                }
+            }
+            catch (Exception ex)
+            {
+                Print($"[MTF Init Notice] Daily Bars / ATR initialization: {ex.Message}");
+            }
+        }
+
+        private void TrackAsianSession(DateTime timeUtc)
+        {
+            DateTime date = timeUtc.Date;
+            int hour = timeUtc.Hour;
+
+            if (hour >= asianStartHour && hour < asianEndHour)
+            {
+                if (_asianSessionDate != date)
+                {
+                    _asianSessionDate = date;
+                    _asianHigh = Bars.LastBar.High;
+                    _asianLow = Bars.LastBar.Low;
+                    _highSwept = false;
+                    _lowSwept = false;
+                    _asianRangePips = 0;
+                }
+                else
+                {
+                    if (Bars.LastBar.High > _asianHigh) _asianHigh = Bars.LastBar.High;
+                    if (Bars.LastBar.Low < _asianLow) _asianLow = Bars.LastBar.Low;
+                }
+                _asianRangePips = Symbol.PipSize > 0 ? (_asianHigh - _asianLow) / Symbol.PipSize : 0;
+            }
+
+            if (drawAsianRangeVisuals && Chart != null && _asianHigh > 0 && _asianLow > 0)
+            {
+                Chart.DrawHorizontalLine("AsianHighLine", _asianHigh, Color.Red, 1, LineStyle.Lines);
+                Chart.DrawHorizontalLine("AsianLowLine", _asianLow, Color.DodgerBlue, 1, LineStyle.Lines);
+            }
+        }
+
+        private bool IsGoldenKillzone(DateTime timeUtc, out string killzoneName)
+        {
+            int hour = timeUtc.Hour;
+            int min = timeUtc.Minute;
+            if (hour >= londonStartHour && hour < londonEndHour)
+            {
+                killzoneName = "London Open Killzone";
+                return true;
+            }
+            if ((hour == nyStartHour && min >= 30) || (hour > nyStartHour && hour < nyEndHour))
+            {
+                killzoneName = "New York Overlap Killzone";
+                return true;
+            }
+            killzoneName = "Outside Killzones";
+            return false;
+        }
+
+        private void CheckJudasSweep(out bool buySignal, out bool sellSignal, out string signalName)
+        {
+            buySignal = false;
+            sellSignal = false;
+            signalName = "NONE";
+
+            if (!IsGoldenKillzone(Server.Time, out _)) return;
+            if (_asianHigh <= 0 || _asianLow <= 0) return;
+
+            // ── Dynamic ATR Asian Range Evaluation (Daily ATR) ─────────────────
+            double effectiveDailyAtr = (_d1Atr != null && _d1Atr.Result.Count > 0 && _d1Atr.Result.LastValue > 0)
+                ? _d1Atr.Result.LastValue
+                : (atr != null && atr.Result.Count > 0 ? atr.Result.LastValue * 4.0 : (_asianHigh - _asianLow));
+
+            double asianRangePrice = _asianHigh - _asianLow;
+            double minAllowedRange = effectiveDailyAtr * (minAsianRangeDailyAtrPercent / 100.0);
+            double maxAllowedRange = effectiveDailyAtr * (maxAsianRangeDailyAtrPercent / 100.0);
+
+            if (asianRangePrice < minAllowedRange || asianRangePrice > maxAllowedRange) return;
+
+            // ── Dynamic ATR Judas Sweep Buffer (M15 ATR with 1.5x Spread Floor) ─
+            double currentM15Atr = (atr != null && atr.Result.Count > 0 && atr.Result.LastValue > 0)
+                ? atr.Result.LastValue
+                : (Symbol.PipSize > 0 ? Symbol.PipSize * 15 : 0.0015);
+
+            double sweepBuffer = Math.Max(currentM15Atr * (sweepBufferM15AtrPercent / 100.0), Symbol.Spread * 1.5);
+
+            var lastBar = Bars.LastBar;
+
+            // SELL Judas Sweep: Bar High spiked above Asian High + buffer, but closed back below Asian High
+            if (lastBar.High >= (_asianHigh + sweepBuffer) && lastBar.Close <= _asianHigh)
+            {
+                if (!enableRsiFilter || rsi == null || rsi.Result.LastValue > rsiOversold)
+                {
+                    sellSignal = true;
+                    _highSwept = true;
+                    signalName = "JUDAS_SWEEP_SELL";
+                }
+            }
+            // BUY Judas Sweep: Bar Low spiked below Asian Low - buffer, but closed back above Asian Low
+            else if (lastBar.Low <= (_asianLow - sweepBuffer) && lastBar.Close >= _asianLow)
+            {
+                if (!enableRsiFilter || rsi == null || rsi.Result.LastValue < rsiOverbought)
+                {
+                    buySignal = true;
+                    _lowSwept = true;
+                    signalName = "JUDAS_SWEEP_BUY";
+                }
+            }
+        }
+
+        private bool buyCondition()
+        {
+            CheckJudasSweep(out bool buySignal, out _, out _);
+            return buySignal;
+        }
+
+        private bool sellCondition()
+        {
+            CheckJudasSweep(out _, out bool sellSignal, out _);
+            return sellSignal;
+        }
+
+        private bool closeBuyCondition()
+        {
+            try
+            {
+                if (fastEma == null || slowEma == null || fastEma.Result.Count < 2 || slowEma.Result.Count < 2) return false;
+                return Functions.HasCrossedBelow(fastEma.Result, slowEma.Result, 0);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool closeSellCondition()
+        {
+            try
+            {
+                if (fastEma == null || slowEma == null || fastEma.Result.Count < 2 || slowEma.Result.Count < 2) return false;
+                return Functions.HasCrossedAbove(fastEma.Result, slowEma.Result, 0);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+        #endregion
+
+        #region Risk & Money Management
+        private void InitializeRiskManagement()
+        {
+            _peakEquity = Account.Equity;
+            _isCircuitBreakerActive = false;
+        }
+
+        private void UpdateEquityProtection()
+        {
+            if (Account.Equity > _peakEquity)
+            {
+                _peakEquity = Account.Equity;
+            }
+
+            if (_peakEquity > 0)
+            {
+                _currentDrawdownPercent = ((_peakEquity - Account.Equity) / _peakEquity) * 100.0;
+            }
+            else
+            {
+                _currentDrawdownPercent = 0.0;
+            }
+
+            if (enableEquityProtection)
+            {
+                if (!_isCircuitBreakerActive && _currentDrawdownPercent >= maxEquityDDPercent)
+                {
+                    _isCircuitBreakerActive = true;
+                    Print($"[Circuit Breaker Triggered] Drawdown reached {_currentDrawdownPercent:F2}% >= {maxEquityDDPercent}%. Reducing Risk Factor by {ddRiskReductionRatio:P0}!");
+                    _ = SendTelegramAlertAsync($"⚠️ <b>[Circuit Breaker Triggered]</b>\nBot: {label}\nCurrent DD: {_currentDrawdownPercent:F2}%\nThreshold: {maxEquityDDPercent}%\nRisk factor reduced by {ddRiskReductionRatio:P0}.");
+                }
+                else if (_isCircuitBreakerActive && _currentDrawdownPercent < (maxEquityDDPercent * 0.5))
+                {
+                    _isCircuitBreakerActive = false;
+                    Print($"[Circuit Breaker Reset] Drawdown recovered to {_currentDrawdownPercent:F2}%. Restoring normal risk factor.");
+                    _ = SendTelegramAlertAsync($"✅ <b>[Circuit Breaker Reset]</b>\nBot: {label}\nCurrent DD: {_currentDrawdownPercent:F2}%. Normal risk restored.");
+                }
+            }
+        }
+
+        private double GetEffectiveRiskFactor()
+        {
+            UpdateEquityProtection();
+            if (enableEquityProtection && _isCircuitBreakerActive)
+            {
+                return riskFactor * ddRiskReductionRatio;
+            }
+            return riskFactor;
+        }
+
+        private void CalculateSLTP(TradeType tradeType, double currentPrice)
+        {
+            if (!SLTPpercentage)
+            {
+                takeprofit = takeprofitPip;
+                stoploss = stoplossPip;
+                _calculatedVol = CalculateVolume(stoploss);
+            }
+            else
+            {
+                double effectiveRisk = GetEffectiveRiskFactor();
+                _calculatedVol = CalculateVolumeFromPercentage(stoplossPercentage, effectiveRisk);
+
+                double slMoney = Account.Equity * (stoplossPercentage / 100.0);
+                double tpMoney = Account.Equity * (takeprofitPercentage / 100.0);
+
+                stoploss = (slMoney / _calculatedVol) / Symbol.PipValue;
+                takeprofit = (tpMoney / _calculatedVol) / Symbol.PipValue;
+            }
+        }
+
+        private double CalculateVolume(double slPips)
+        {
+            if (enableFixedVol)
+            {
+                return Symbol.NormalizeVolumeInUnits(_fixedVolLots * Symbol.LotSize);
+            }
+
+            if (_voltoAccount)
+            {
+                double effectiveRisk = GetEffectiveRiskFactor();
+                double riskAmount = Account.Equity * (effectiveRisk / 100.0);
+                double lossPerUnit = slPips * Symbol.PipValue;
+                if (lossPerUnit <= 0) lossPerUnit = Symbol.PipValue * 100.0;
+                double volUnits = riskAmount / lossPerUnit;
+                double normalized = Symbol.NormalizeVolumeInUnits(volUnits);
+
+                double maxUnits = maxVol * Symbol.LotSize;
+                if (normalized > maxUnits) normalized = maxUnits;
+                if (normalized < Symbol.VolumeInUnitsMin) normalized = Symbol.VolumeInUnitsMin;
+                if (normalized > Symbol.VolumeInUnitsMax) normalized = Symbol.VolumeInUnitsMax;
+
+                return normalized;
+            }
+
+            return Symbol.NormalizeVolumeInUnits(_fixedVolLots * Symbol.LotSize);
+        }
+
+        private double CalculateVolumeFromPercentage(double slPercentage, double riskPercentage)
+        {
+            if (enableFixedVol)
+            {
+                return Symbol.NormalizeVolumeInUnits(_fixedVolLots * Symbol.LotSize);
+            }
+
+            double riskAmount = Account.Equity * (riskPercentage / 100.0);
+            double slPriceDistance = Symbol.Ask * (slPercentage / 100.0);
+            double lossPerUnit = (slPriceDistance / Symbol.PipSize) * Symbol.PipValue;
+            if (lossPerUnit <= 0) lossPerUnit = Symbol.PipValue * 100.0;
+
+            double targetUnits = riskAmount / lossPerUnit;
+            double normalized = Symbol.NormalizeVolumeInUnits(targetUnits);
+
+            double maxUnits = maxVol * Symbol.LotSize;
+            if (normalized > maxUnits) normalized = maxUnits;
+            if (normalized < Symbol.VolumeInUnitsMin) normalized = Symbol.VolumeInUnitsMin;
+            if (normalized > Symbol.VolumeInUnitsMax) normalized = Symbol.VolumeInUnitsMax;
+
+            return normalized;
+        }
+        #endregion
+
+        #region Trailing Stop & Break Even
+        private void TrailingStop()
+        {
+            var positions = Positions.FindAll(label, SymbolName);
+            foreach (var pos in positions)
+            {
+                bool isBeMoved = _movedToBreakEven.ContainsKey(pos.Id) && _movedToBreakEven[pos.Id];
+                bool shouldTrail = enableTrailingStop || (enableTrailingStopFromBreakEven && isBeMoved);
+                if (!shouldTrail) continue;
+
+                // Native cTrader Platform Trailing Stop: Once activated, cTrader server trails automatically without tick spam
+                if (pos.HasTrailingStop) continue;
+
+                if (pos.TradeType == TradeType.Buy)
+                {
+                    double distance = (Symbol.Bid - pos.EntryPrice) / Symbol.PipSize;
+                    bool triggerMet = enableTrailingStop ? (distance >= TrailingStopTrigger) : (distance >= TrailingStopStep);
+                    if (triggerMet)
+                    {
+                        double newSL = Symbol.Bid - TrailingStopStep * Symbol.PipSize;
+                        if (pos.StopLoss == null || newSL > pos.StopLoss)
+                        {
+                            SafeModifyPosition(pos, newSL, pos.TakeProfit, hasTrailingStop: true, source: "Native TrailingStop Activation");
+                        }
+                    }
+                }
+                else if (pos.TradeType == TradeType.Sell)
+                {
+                    double distance = (pos.EntryPrice - Symbol.Ask) / Symbol.PipSize;
+                    bool triggerMet = enableTrailingStop ? (distance >= TrailingStopTrigger) : (distance >= TrailingStopStep);
+                    if (triggerMet)
+                    {
+                        double newSL = Symbol.Ask + TrailingStopStep * Symbol.PipSize;
+                        if (pos.StopLoss == null || newSL < pos.StopLoss)
+                        {
+                            SafeModifyPosition(pos, newSL, pos.TakeProfit, hasTrailingStop: true, source: "Native TrailingStop Activation");
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Dynamically calculates the required break-even buffer pips to fully offset broker round-trip commission and swap fees.
+        /// Prevents negative net profit when price returns to hit break-even Stop Loss.
+        /// </summary>
+        private double CalculateTrueBreakEvenBufferPips(Position pos)
+        {
+            if (pos == null) return breakEvenExtraPips;
+
+            // 1. Estimate total round-trip commission. Most cTrader ECN/Raw brokers charge half-turn at open and half-turn at close.
+            double estimatedCommission = Math.Abs(pos.Commissions) * 2.0;
+
+            // 2. Add accumulated negative swap (overnight financing cost) if any
+            double negativeSwap = pos.Swap < 0 ? Math.Abs(pos.Swap) : 0.0;
+            double totalFees = estimatedCommission + negativeSwap;
+
+            // 3. Convert fee monetary costs into pips based on position volume in units and pip value
+            double pipMoney = pos.VolumeInUnits * Symbol.PipValue;
+            double feePips = pipMoney > 0 ? (totalFees / pipMoney) : 0.0;
+
+            // 4. Add safety margin (+0.5 pip) to cover slippage and spread widening during closing execution
+            double minSafeBufferPips = feePips + 0.5;
+
+            // 5. Final buffer is the maximum of user's configured buffer and min fee-compensating buffer
+            return Math.Max(breakEvenExtraPips, minSafeBufferPips);
+        }
+
+        private void ProcessBreakEvenLogic()
+        {
+            if (!enableBreakEvenPrice) return;
+
+            var positions = Positions.FindAll(label, SymbolName);
+            foreach (var pos in positions)
+            {
+                if (_movedToBreakEven.ContainsKey(pos.Id) && _movedToBreakEven[pos.Id]) continue;
+
+                double pipsGain = 0;
+                if (pos.TradeType == TradeType.Buy)
+                {
+                    pipsGain = (Symbol.Bid - pos.EntryPrice) / Symbol.PipSize;
+                }
+                else if (pos.TradeType == TradeType.Sell)
+                {
+                    pipsGain = (pos.EntryPrice - Symbol.Ask) / Symbol.PipSize;
+                }
+
+                bool isTriggered = false;
+                if (breakEvenMode == BreakEvenTriggerMode.Risk_Reward_Ratio)
+                {
+                    double initialSlDistancePips = pos.StopLoss.HasValue 
+                        ? Math.Abs(pos.EntryPrice - pos.StopLoss.Value) / Symbol.PipSize 
+                        : stoplossPip;
+
+                    if (initialSlDistancePips <= 0) initialSlDistancePips = stoplossPip > 0 ? stoplossPip : 100;
+
+                    double currentRr = pipsGain / initialSlDistancePips;
+                    if (currentRr >= breakEvenRrTrigger)
+                    {
+                        isTriggered = true;
+                    }
+                }
+                else // Fixed_Pips
+                {
+                    if (pipsGain >= breakEvenTrigger)
+                    {
+                        isTriggered = true;
+                    }
+                }
+
+                if (isTriggered)
+                {
+                    double effectiveBufferPips = CalculateTrueBreakEvenBufferPips(pos);
+                    double extraBuffer = effectiveBufferPips * Symbol.PipSize;
+                    bool enableNativeTs = enableTrailingStopFromBreakEven;
+                    double estimatedCommission = Math.Abs(pos.Commissions) * 2.0;
+                    double negativeSwap = pos.Swap < 0 ? Math.Abs(pos.Swap) : 0.0;
+
+                    if (pos.TradeType == TradeType.Buy)
+                    {
+                        double newSL = pos.EntryPrice + extraBuffer;
+                        if (pos.StopLoss == null || newSL > pos.StopLoss)
+                        {
+                            var res = SafeModifyPosition(pos, newSL, pos.TakeProfit, hasTrailingStop: enableNativeTs, source: "BreakEven");
+                            if (res != null && res.IsSuccessful)
+                            {
+                                _movedToBreakEven[pos.Id] = true;
+                                Print($"[BreakEven] Buy position #{pos.Id} moved SL to break-even ({newSL:F5}, Buffer: +{effectiveBufferPips:F1} pips [FeeCost: ${(estimatedCommission + negativeSwap):F2}, UserBuffer: {breakEvenExtraPips:F1}p], NativeTS: {enableNativeTs}). Gain: {pipsGain:F1} pips.");
+                            }
+                        }
+                    }
+                    else if (pos.TradeType == TradeType.Sell)
+                    {
+                        double newSL = pos.EntryPrice - extraBuffer;
+                        if (pos.StopLoss == null || newSL < pos.StopLoss)
+                        {
+                            var res = SafeModifyPosition(pos, newSL, pos.TakeProfit, hasTrailingStop: enableNativeTs, source: "BreakEven");
+                            if (res != null && res.IsSuccessful)
+                            {
+                                _movedToBreakEven[pos.Id] = true;
+                                Print($"[BreakEven] Sell position #{pos.Id} moved SL to break-even ({newSL:F5}, Buffer: -{effectiveBufferPips:F1} pips [FeeCost: ${(estimatedCommission + negativeSwap):F2}, UserBuffer: {breakEvenExtraPips:F1}p], NativeTS: {enableNativeTs}). Gain: {pipsGain:F1} pips.");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        #region Safe Position Modification & Pre-Flight Validation Engine
+        private TradeResult SafeModifyPosition(Position pos, double? targetSL, double? targetTP, bool? hasTrailingStop = null, string source = "")
+        {
+            if (pos == null) return null;
+
+            double currentBid = Symbol.Bid;
+            double currentAsk = Symbol.Ask;
+            double minStopBuffer = Math.Max(Symbol.Spread * 3, Symbol.TickSize * 10);
+
+            // Strict One-Way Profit Ratchet: Never loosen Stop Loss (Giai đoạn 2: No Loosening)
+            double? finalSL = targetSL ?? pos.StopLoss;
+            if (targetSL.HasValue && pos.StopLoss.HasValue)
+            {
+                if (pos.TradeType == TradeType.Buy && targetSL.Value < pos.StopLoss.Value)
+                {
+                    finalSL = pos.StopLoss.Value;
+                }
+                else if (pos.TradeType == TradeType.Sell && targetSL.Value > pos.StopLoss.Value)
+                {
+                    finalSL = pos.StopLoss.Value;
+                }
+            }
+
+            double? finalTP = targetTP ?? pos.TakeProfit;
+            bool finalHasTrailingStop = hasTrailingStop ?? pos.HasTrailingStop;
+
+            // ── 1. SELL Position Intelligent Pre-Flight Validation & Auto-Mapping ──
+            if (pos.TradeType == TradeType.Sell)
+            {
+                // A. Smart Auto-Mapping: If proposed TP is at or ABOVE current market (targetTP >= currentBid - minStopBuffer)
+                // For a SELL order, TP cannot be placed above market. Geometrically, this is a Positive Trailing Stop Loss!
+                if (targetTP.HasValue && targetTP.Value >= (currentBid - minStopBuffer))
+                {
+                    double proposedTrailingSL = targetTP.Value;
+                    Print($"[SafeModify Auto-Mapping] Detected targetTP {targetTP.Value:F2} is >= Market (Bid: {currentBid:F2}) on SELL #{pos.Id}. Re-mapping to Trailing SL to lock profit!");
+                    
+                    // Preserve original structural TP
+                    finalTP = pos.TakeProfit;
+
+                    // If proposed trailing SL is valid above current market (proposedTrailingSL > currentAsk + minStopBuffer)
+                    if (proposedTrailingSL > (currentAsk + minStopBuffer))
+                    {
+                        if (!pos.StopLoss.HasValue || proposedTrailingSL < pos.StopLoss.Value)
+                        {
+                            finalSL = proposedTrailingSL;
+                        }
+                    }
+                    else
+                    {
+                        // Price has already reached or breached this trailing level
+                        if (currentAsk < pos.EntryPrice)
+                        {
+                            Print($"[SafeModify Profit-Lock] SELL #{pos.Id} is in profit ($+{pos.NetProfit:F2}) and trailing level {proposedTrailingSL:F2} is breached by Ask ({currentAsk:F2}). Closing position to lock profit!");
+                            _lastAgentReason = "ProfitLockExit";
+                            ClosePosition(pos);
+                            return null;
+                        }
+                        else
+                        {
+                            finalSL = pos.StopLoss;
+                        }
+                    }
+                }
+
+                // B. Validate Stop Loss Boundary for SELL: SL must be strictly > (currentAsk + minStopBuffer)
+                if (finalSL.HasValue && finalSL.Value <= (currentAsk + minStopBuffer))
+                {
+                    if (currentAsk < pos.EntryPrice)
+                    {
+                        Print($"[SafeModify Profit-Lock] SELL #{pos.Id} is in profit ($+{pos.NetProfit:F2}) and SL {finalSL.Value:F2} is within market Ask ({currentAsk:F2}). Closing position immediately!");
+                        _lastAgentReason = "ProfitLockExit";
+                        ClosePosition(pos);
+                        return null;
+                    }
+                    else
+                    {
+                        // In drawdown: retain original safe SL to prevent broker rejection
+                        finalSL = pos.StopLoss;
+                    }
+                }
+
+                // C. Validate Take Profit Boundary for SELL: TP must be strictly < (currentBid - minStopBuffer)
+                if (finalTP.HasValue && finalTP.Value >= (currentBid - minStopBuffer))
+                {
+                    finalTP = pos.TakeProfit;
+                }
+
+                // D. Ensure SL > TP for SELL
+                if (finalSL.HasValue && finalTP.HasValue && finalSL.Value <= finalTP.Value)
+                {
+                    finalTP = pos.TakeProfit;
+                }
+            }
+            // ── 2. BUY Position Intelligent Pre-Flight Validation & Auto-Mapping ──
+            else if (pos.TradeType == TradeType.Buy)
+            {
+                // A. Smart Auto-Mapping: If proposed TP is at or BELOW current market (targetTP <= currentAsk + minStopBuffer)
+                // For a BUY order, TP cannot be placed below market. Geometrically, this is a Positive Trailing Stop Loss!
+                if (targetTP.HasValue && targetTP.Value <= (currentAsk + minStopBuffer))
+                {
+                    double proposedTrailingSL = targetTP.Value;
+                    Print($"[SafeModify Auto-Mapping] Detected targetTP {targetTP.Value:F2} is <= Market (Ask: {currentAsk:F2}) on BUY #{pos.Id}. Re-mapping to Trailing SL to lock profit!");
+                    
+                    // Preserve original structural TP
+                    finalTP = pos.TakeProfit;
+
+                    // If proposed trailing SL is valid below current market (proposedTrailingSL < currentBid - minStopBuffer)
+                    if (proposedTrailingSL < (currentBid - minStopBuffer))
+                    {
+                        if (!pos.StopLoss.HasValue || proposedTrailingSL > pos.StopLoss.Value)
+                        {
+                            finalSL = proposedTrailingSL;
+                        }
+                    }
+                    else
+                    {
+                        // Price has already reached or breached this trailing level
+                        if (currentBid > pos.EntryPrice)
+                        {
+                            Print($"[SafeModify Profit-Lock] BUY #{pos.Id} is in profit ($+{pos.NetProfit:F2}) and trailing level {proposedTrailingSL:F2} is breached by Bid ({currentBid:F2}). Closing position to lock profit!");
+                            _lastAgentReason = "ProfitLockExit";
+                            ClosePosition(pos);
+                            return null;
+                        }
+                        else
+                        {
+                            finalSL = pos.StopLoss;
+                        }
+                    }
+                }
+
+                // B. Validate Stop Loss Boundary for BUY: SL must be strictly < (currentBid - minStopBuffer)
+                if (finalSL.HasValue && finalSL.Value >= (currentBid - minStopBuffer))
+                {
+                    if (currentBid > pos.EntryPrice)
+                    {
+                        Print($"[SafeModify Profit-Lock] BUY #{pos.Id} is in profit ($+{pos.NetProfit:F2}) and SL {finalSL.Value:F2} is within market Bid ({currentBid:F2}). Closing position immediately!");
+                        _lastAgentReason = "ProfitLockExit";
+                        ClosePosition(pos);
+                        return null;
+                    }
+                    else
+                    {
+                        // In drawdown: retain original safe SL to prevent broker rejection
+                        finalSL = pos.StopLoss;
+                    }
+                }
+
+                // C. Validate Take Profit Boundary for BUY: TP must be strictly > (currentAsk + minStopBuffer)
+                if (finalTP.HasValue && finalTP.Value <= (currentAsk + minStopBuffer))
+                {
+                    finalTP = pos.TakeProfit;
+                }
+
+                // D. Ensure SL < TP for BUY
+                if (finalSL.HasValue && finalTP.HasValue && finalSL.Value >= finalTP.Value)
+                {
+                    finalTP = pos.TakeProfit;
+                }
+            }
+
+            // ── 3. Final Boundary Verification & Submission to Broker ──
+            bool slChanged = (finalSL.HasValue && (!pos.StopLoss.HasValue || Math.Abs(finalSL.Value - pos.StopLoss.Value) > (Symbol.PipSize * 0.5)));
+            bool tpChanged = (finalTP.HasValue && (!pos.TakeProfit.HasValue || Math.Abs(finalTP.Value - pos.TakeProfit.Value) > (Symbol.PipSize * 0.5)));
+            bool tsChanged = (finalHasTrailingStop != pos.HasTrailingStop);
+
+            if (!slChanged && !tpChanged && !tsChanged)
+            {
+                return null;
+            }
+
+            // Pre-flight broker geometric compliance check
+            bool isSlSafe = !finalSL.HasValue || (pos.TradeType == TradeType.Buy ? finalSL.Value < (currentBid - minStopBuffer) : finalSL.Value > (currentAsk + minStopBuffer));
+            bool isTpSafe = !finalTP.HasValue || (pos.TradeType == TradeType.Buy ? finalTP.Value > (currentAsk + minStopBuffer) : finalTP.Value < (currentBid - minStopBuffer));
+
+            if (!isSlSafe || !isTpSafe)
+            {
+                Print($"[SafeModify Notice] Position #{pos.Id} modification bypassed (SL: {finalSL}, TP: {finalTP} vs Bid: {currentBid:F2}, Ask: {currentAsk:F2}, Buffer: {minStopBuffer:F2}). Prevented InvalidStopLossTakeProfit broker rejection.");
+                return null;
+            }
+
+#pragma warning disable CS0618
+            var result = ModifyPosition(pos, finalSL, finalTP, finalHasTrailingStop);
+#pragma warning restore CS0618
+            if (result.IsSuccessful)
+            {
+                Print($"[{source}] Position #{pos.Id} successfully modified -> SL: {finalSL:F2}, TP: {finalTP:F2}, HasTS: {finalHasTrailingStop}");
+            }
+            else
+            {
+                Print($"[{source} Warning] ModifyPosition for #{pos.Id} returned: {result.Error}");
+            }
+            return result;
+        }
+        #endregion
+        #endregion
+
+        #region DCA Logic
+        private void ProcessDCALogic()
+        {
+            if (!dcaEnable) return;
+            findEndDeal();
+            checkToCloseDeal();
+
+            var openPos = Positions.FindAll(label, SymbolName);
+            if (openPos.Length == 0 || openPos.Length >= maxPermittedOrder) return;
+
+            if (dcaStartPosition == null || dcaEndPosition_down == null || dcaEndPosition_up == null) return;
+
+            if (dcaStartPosition.TradeType == TradeType.Buy)
+            {
+                if (dcaDown)
+                {
+                    double newEntryPrice = dcaEndPosition_down.EntryPrice - dca_Distance * Symbol.PipSize;
+                    if (Math.Max(Symbol.Ask, Symbol.Bid) <= newEntryPrice)
+                    {
+                        double vol = dcaVolumeUnit();
+                        var res = ExecuteMarketOrder(TradeType.Buy, SymbolName, vol, label, stoploss, takeprofit);
+                        if (res.IsSuccessful) { findEndDeal(); }
+                    }
+                }
+            }
+            else if (dcaStartPosition.TradeType == TradeType.Sell)
+            {
+                if (dcaDown)
+                {
+                    double newEntryPrice = dcaEndPosition_down.EntryPrice + dca_Distance * Symbol.PipSize;
+                    if (Math.Min(Symbol.Ask, Symbol.Bid) >= newEntryPrice)
+                    {
+                        double vol = dcaVolumeUnit();
+                        var res = ExecuteMarketOrder(TradeType.Sell, SymbolName, vol, label, stoploss, takeprofit);
+                        if (res.IsSuccessful) { findEndDeal(); }
+                    }
+                }
+            }
+        }
+
+        private void findEndDeal()
+        {
+            var openPositions = Positions.FindAll(label, SymbolName);
+            if (openPositions.Length == 0)
+            {
+                dcaStartPosition = null;
+                dcaEndPosition_down = null;
+                dcaEndPosition_up = null;
+                return;
+            }
+
+            dcaStartPosition = openPositions[0];
+            dcaEndPosition_down = openPositions[0];
+            dcaEndPosition_up = openPositions[0];
+
+            for (int i = 1; i < openPositions.Length; i++)
+            {
+                if (openPositions[i].EntryPrice < dcaEndPosition_down.EntryPrice)
+                    dcaEndPosition_down = openPositions[i];
+
+                if (openPositions[i].EntryPrice > dcaEndPosition_up.EntryPrice)
+                    dcaEndPosition_up = openPositions[i];
+            }
+        }
+
+        private double dcaVolumeUnit()
+        {
+            var openPositions = Positions.FindAll(label, SymbolName);
+            if (openPositions.Length == 0) return _calculatedVol;
+
+            double lastVol = openPositions[openPositions.Length - 1].VolumeInUnits;
+            if (dcaEnableDoubleVol)
+            {
+                double dVol = lastVol * 2;
+                return Symbol.NormalizeVolumeInUnits(dVol > maxVol * Symbol.LotSize ? maxVol * Symbol.LotSize : dVol);
+            }
+            if (dcaEnableIncreaseVol)
+            {
+                double incVol = lastVol + (_fixedVolLots * Symbol.LotSize);
+                return Symbol.NormalizeVolumeInUnits(incVol > maxVol * Symbol.LotSize ? maxVol * Symbol.LotSize : incVol);
+            }
+            return lastVol;
+        }
+
+        private void checkToCloseDeal()
+        {
+            var openPositions = Positions.FindAll(label, SymbolName);
+            if (openPositions.Length == 0) return;
+
+            double totalNetProfit = openPositions.Sum(p => p.NetProfit);
+
+            if (dca_enableProfittoClose && totalNetProfit >= profittoClose)
+            {
+                CloseAllPositions();
+                return;
+            }
+
+            if (dcaProfitPercentageToCloseAll)
+            {
+                double targetProfit = Account.Equity * (dcaProfitPercent / 100.0);
+                if (totalNetProfit >= targetProfit)
+                {
+                    CloseAllPositions();
+                    return;
+                }
+            }
+        }
+
+        private void CloseAllPositions()
+        {
+            foreach (var pos in Positions.FindAll(label, SymbolName))
+            {
+                ClosePosition(pos);
+            }
+            resetFlagsforManualClosed();
+        }
+        #endregion
+
+        #region News Filter Logic
+        private void InitializeNewsFilter()
+        {
+            if (!enableNewsFilter || RunningMode != RunningMode.RealTime) return;
+
+            // Load from cache first for instantaneous startup protection, then refresh asynchronously
+            TryLoadNewsFromLocalCache();
+            FetchForexFactoryNewsAsync();
+        }
+
+        private void CheckNewsEvents()
+        {
+            if (!enableNewsFilter || RunningMode != RunningMode.RealTime) return;
+
+            // Refresh schedule: fetch new data if > 6 hours since last successful fetch (with 5-minute retry cooldown)
+            if ((DateTime.UtcNow - _lastNewsFetchTime).TotalHours >= 6 && 
+                (DateTime.UtcNow - _lastNewsFetchAttempt).TotalMinutes >= 5)
+            {
+                FetchForexFactoryNewsAsync();
+            }
+
+            // Close positions if configured
+            if (closePositionsBeforeNews)
+            {
+                DateTime nowUtc = DateTime.UtcNow;
+                List<NewsEvent> snapshot;
+                lock (_newsLock)
+                {
+                    snapshot = new List<NewsEvent>(_newsEvents);
+                }
+
+                foreach (var ev in snapshot)
+                {
+                    if (highImpactOnly && !string.Equals(ev.Impact, "High", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!IsCurrencyRelevant(ev.Country)) continue;
+
+                    // Close window: exactly within pauseBeforeNewsMins prior to news event release
+                    if (nowUtc >= ev.Date.AddMinutes(-pauseBeforeNewsMins) && nowUtc <= ev.Date)
+                    {
+                        var positions = Positions.FindAll(label, SymbolName);
+                        if (positions.Length > 0)
+                        {
+                            Print($"[News Filter Protection] Closing {positions.Length} open positions before High Impact News: '{ev.Title}' ({ev.Country}) at {ev.Date:HH:mm} UTC.");
+                            CloseAllPositions();
+                            _ = SendTelegramAlertAsync($"📰 <b>[News Filter Protection]</b>\nĐã đóng {positions.Length} vị thế <b>{SymbolName}</b> trước tin High Impact: <i>{ev.Title} ({ev.Country})</i> lúc {ev.Date:HH:mm} UTC.");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        public bool IsCurrencyRelevant(string country)
+        {
+            if (string.IsNullOrWhiteSpace(country)) return false;
+            string cleanCountry = country.Trim().ToUpperInvariant();
+            if (cleanCountry == "ALL") return true;
+
+            string cleanSymbol = System.Text.RegularExpressions.Regex.Replace(SymbolName ?? "", "[^a-zA-Z]", "").ToUpperInvariant();
+
+            // Direct currency code substring match in symbol name (e.g. "USD" in "XAUUSD" or "EURUSD", "JPY" in "GBPJPY")
+            if (cleanSymbol.Contains(cleanCountry)) return true;
+
+            // Gold & Metals alias protection (Gold/Silver instruments are denominated in USD)
+            if ((cleanSymbol.Contains("XAU") || cleanSymbol.Contains("GOLD") || cleanSymbol.Contains("XAG") || cleanSymbol.Contains("SILVER")) && cleanCountry == "USD")
+            {
+                return true;
+            }
+
+            // Crypto alias protection (BTC, ETH, BITCOIN, ETHEREUM, CRYPTO usually denominated in USD)
+            if ((cleanSymbol.Contains("BTC") || cleanSymbol.Contains("BITCOIN") || cleanSymbol.Contains("ETH") || cleanSymbol.Contains("CRYPTO")) && cleanCountry == "USD")
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        public bool IsNewsBlackoutActive(out string reason, out NewsEvent activeNews)
+        {
+            reason = "";
+            activeNews = null;
+            if (!enableNewsFilter) return false;
+
+            DateTime nowUtc = DateTime.UtcNow;
+            List<NewsEvent> snapshot;
+            lock (_newsLock)
+            {
+                snapshot = new List<NewsEvent>(_newsEvents);
+            }
+
+            if (snapshot.Count == 0) return false;
+
+            foreach (var ev in snapshot)
+            {
+                if (highImpactOnly && !string.Equals(ev.Impact, "High", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (!IsCurrencyRelevant(ev.Country))
+                    continue;
+
+                DateTime startPause = ev.Date.AddMinutes(-pauseBeforeNewsMins);
+                DateTime endPause = ev.Date.AddMinutes(pauseAfterNewsMins);
+
+                if (nowUtc >= startPause && nowUtc <= endPause)
+                {
+                    double diffMins = (ev.Date - nowUtc).TotalMinutes;
+                    if (diffMins >= 0)
+                        reason = $"High Impact News: '{ev.Title}' ({ev.Country}) in {diffMins:F0}m";
+                    else
+                        reason = $"High Impact News: '{ev.Title}' ({ev.Country}) occurred {Math.Abs(diffMins):F0}m ago";
+
+                    activeNews = ev;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private string GetNewsFilterStatusSummary()
+        {
+            if (!enableNewsFilter) return "DISABLED";
+
+            if (IsNewsBlackoutActive(out string activeReason, out _))
+            {
+                return $"BLOCKED ({activeReason})";
+            }
+
+            DateTime nowUtc = DateTime.UtcNow;
+            List<NewsEvent> snapshot;
+            lock (_newsLock)
+            {
+                snapshot = new List<NewsEvent>(_newsEvents);
+            }
+
+            if (snapshot.Count == 0) return "WAITING FEED";
+
+            NewsEvent nextNews = null;
+            double minDiff = double.MaxValue;
+
+            foreach (var ev in snapshot)
+            {
+                if (highImpactOnly && !string.Equals(ev.Impact, "High", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (!IsCurrencyRelevant(ev.Country))
+                    continue;
+
+                double diff = (ev.Date - nowUtc).TotalMinutes;
+                if (diff > 0 && diff < minDiff)
+                {
+                    minDiff = diff;
+                    nextNews = ev;
+                }
+            }
+
+            if (nextNews != null)
+            {
+                if (minDiff < 60)
+                    return $"CLEAR (Next: {nextNews.Country} '{nextNews.Title}' in {minDiff:F0}m)";
+                else
+                    return $"CLEAR (Next: {nextNews.Country} in {minDiff / 60.0:F1}h)";
+            }
+
+            return "CLEAR (No High News)";
+        }
+
+        private void FetchForexFactoryNewsAsync()
+        {
+            if (!enableNewsFilter || RunningMode != RunningMode.RealTime) return;
+
+            Task.Run(() =>
+            {
+                _lastNewsFetchAttempt = DateTime.UtcNow;
+
+                // Primary JSON Feed
+                try
+                {
+                    string jsonUrl = "https://nfs.faireconomy.media/ff_calendar_thisweek.json";
+#pragma warning disable SYSLIB0014
+                    var req = (HttpWebRequest)WebRequest.Create(jsonUrl);
+                    req.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+                    req.Accept = "application/json, text/plain, */*";
+                    req.Timeout = 10000;
+
+                    using (var res = (HttpWebResponse)req.GetResponse())
+                    using (var stream = res.GetResponseStream())
+                    using (var reader = new StreamReader(stream))
+                    {
+                        string json = reader.ReadToEnd();
+                        var events = ParseNewsJson(json);
+                        if (events != null && events.Count > 0)
+                        {
+                            lock (_newsLock)
+                            {
+                                _newsEvents.Clear();
+                                _newsEvents.AddRange(events);
+                                _lastNewsFetchTime = DateTime.UtcNow;
+                            }
+                            SaveNewsToLocalCache(json, true);
+                            Print($"[News Filter] Loaded {events.Count} news events via JSON.");
+                            return;
+                        }
+                    }
+#pragma warning restore SYSLIB0014
+                }
+                catch (Exception ex)
+                {
+                    Print($"[News Filter Warning] JSON fetch failed ({ex.Message}). Attempting XML fallback...");
+                }
+
+                // Fallback XML Feed
+                try
+                {
+                    string xmlUrl = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml";
+#pragma warning disable SYSLIB0014
+                    var reqXml = (HttpWebRequest)WebRequest.Create(xmlUrl);
+                    reqXml.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+                    reqXml.Accept = "application/xml, text/xml, */*";
+                    reqXml.Timeout = 10000;
+
+                    using (var resXml = (HttpWebResponse)reqXml.GetResponse())
+                    using (var streamXml = resXml.GetResponseStream())
+                    using (var readerXml = new StreamReader(streamXml))
+                    {
+                        string xml = readerXml.ReadToEnd();
+                        var events = ParseNewsXml(xml);
+                        if (events != null && events.Count > 0)
+                        {
+                            lock (_newsLock)
+                            {
+                                _newsEvents.Clear();
+                                _newsEvents.AddRange(events);
+                                _lastNewsFetchTime = DateTime.UtcNow;
+                            }
+                            SaveNewsToLocalCache(xml, false);
+                            Print($"[News Filter] Loaded {events.Count} news events via XML fallback.");
+                            return;
+                        }
+                    }
+#pragma warning restore SYSLIB0014
+                }
+                catch (Exception exXml)
+                {
+                    Print($"[News Filter Warning] XML fallback failed ({exXml.Message}). Attempting local cache...");
+                }
+
+                // Fallback Local Disk Cache
+                TryLoadNewsFromLocalCache();
+            });
+        }
+
+        private List<NewsEvent> ParseNewsJson(string jsonContent)
+        {
+            var list = new List<NewsEvent>();
+            try
+            {
+                using (var doc = JsonDocument.Parse(jsonContent))
+                {
+                    foreach (var element in doc.RootElement.EnumerateArray())
+                    {
+                        string title = element.TryGetProperty("title", out var pTitle) ? pTitle.GetString() : "";
+                        string country = element.TryGetProperty("country", out var pCountry) ? pCountry.GetString() : "";
+                        string impact = element.TryGetProperty("impact", out var pImpact) ? pImpact.GetString() : "";
+                        string dateStr = element.TryGetProperty("date", out var pDate) ? pDate.GetString() : "";
+
+                        if (!string.IsNullOrEmpty(dateStr) && DateTimeOffset.TryParse(dateStr, out DateTimeOffset dto))
+                        {
+                            list.Add(new NewsEvent
+                            {
+                                Title = title ?? "",
+                                Country = country ?? "",
+                                Impact = impact ?? "",
+                                Date = dto.UtcDateTime
+                            });
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Print($"[News Filter Error] JSON parsing error: {ex.Message}");
+            }
+            return list;
+        }
+
+        private List<NewsEvent> ParseNewsXml(string xmlContent)
+        {
+            var list = new List<NewsEvent>();
+            try
+            {
+                var doc = XDocument.Parse(xmlContent);
+                foreach (var elem in doc.Descendants("event"))
+                {
+                    string title = elem.Element("title")?.Value?.Trim() ?? "";
+                    string country = elem.Element("country")?.Value?.Trim() ?? "";
+                    string impact = elem.Element("impact")?.Value?.Trim() ?? "";
+                    string dateStr = elem.Element("date")?.Value?.Trim() ?? "";
+                    string timeStr = elem.Element("time")?.Value?.Trim() ?? "";
+
+                    if (string.IsNullOrEmpty(dateStr)) continue;
+
+                    if (string.IsNullOrEmpty(timeStr) ||
+                        timeStr.Equals("All Day", StringComparison.OrdinalIgnoreCase) ||
+                        timeStr.Equals("Tentative", StringComparison.OrdinalIgnoreCase) ||
+                        timeStr.StartsWith("Day", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (DateTime.TryParse(dateStr, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out DateTime dOnly))
+                        {
+                            list.Add(new NewsEvent
+                            {
+                                Title = title,
+                                Country = country,
+                                Impact = impact,
+                                Date = DateTime.SpecifyKind(dOnly.Date, DateTimeKind.Utc)
+                            });
+                        }
+                        continue;
+                    }
+
+                    string combined = $"{dateStr} {timeStr}";
+                    if (DateTime.TryParse(combined, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out DateTime parsedDt))
+                    {
+                        list.Add(new NewsEvent
+                        {
+                            Title = title,
+                            Country = country,
+                            Impact = impact,
+                            Date = DateTime.SpecifyKind(parsedDt, DateTimeKind.Utc)
+                        });
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Print($"[News Filter Error] XML parsing error: {ex.Message}");
+            }
+            return list;
+        }
+
+        private void SaveNewsToLocalCache(string content, bool isJson)
+        {
+            if (RunningMode != RunningMode.RealTime) return;
+            try
+            {
+                string path = GetLocalNewsCacheFilePath(isJson ? "json" : "xml");
+                System.IO.File.WriteAllText(path, content, Encoding.UTF8);
+            }
+            catch { }
+        }
+
+        private void TryLoadNewsFromLocalCache()
+        {
+            if (RunningMode != RunningMode.RealTime) return;
+            try
+            {
+                string jsonPath = GetLocalNewsCacheFilePath("json");
+                if (System.IO.File.Exists(jsonPath))
+                {
+                    string json = System.IO.File.ReadAllText(jsonPath, Encoding.UTF8);
+                    var events = ParseNewsJson(json);
+                    if (events != null && events.Count > 0)
+                    {
+                        lock (_newsLock)
+                        {
+                            _newsEvents.Clear();
+                            _newsEvents.AddRange(events);
+                        }
+                        Print($"[News Filter] Loaded {events.Count} news events from local JSON cache.");
+                        return;
+                    }
+                }
+
+                string xmlPath = GetLocalNewsCacheFilePath("xml");
+                if (System.IO.File.Exists(xmlPath))
+                {
+                    string xml = System.IO.File.ReadAllText(xmlPath, Encoding.UTF8);
+                    var events = ParseNewsXml(xml);
+                    if (events != null && events.Count > 0)
+                    {
+                        lock (_newsLock)
+                        {
+                            _newsEvents.Clear();
+                            _newsEvents.AddRange(events);
+                        }
+                        Print($"[News Filter] Loaded {events.Count} news events from local XML cache.");
+                        return;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Print($"[News Filter Warning] Could not load local cache: {ex.Message}");
+            }
+        }
+
+        private string GetLocalNewsCacheFilePath(string ext)
+        {
+            try
+            {
+                string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                string dir = System.IO.Path.Combine(appData, "cTrader-AI-Trading-Hub");
+                if (!System.IO.Directory.Exists(dir))
+                {
+                    System.IO.Directory.CreateDirectory(dir);
+                }
+                return System.IO.Path.Combine(dir, $"ff_calendar_cache.{ext}");
+            }
+            catch
+            {
+                return System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, $"ff_calendar_cache.{ext}");
+            }
+        }
+        #endregion
+
+        #region Telegram Alerts
+        public async Task SendTelegramAlertAsync(string message)
+        {
+            if (!enableTelegramAlerts || RunningMode != RunningMode.RealTime)
+                return;
+
+            try
+            {
+                // Direct Telegram API (when token & chat ID are configured in cBot parameters)
+                if (!string.IsNullOrWhiteSpace(telegramBotToken) && !string.IsNullOrWhiteSpace(telegramChatId))
+                {
+                    using (var httpClient = new HttpClient())
+                    {
+                        httpClient.Timeout = TimeSpan.FromSeconds(10);
+                        string url = $"https://api.telegram.org/bot{telegramBotToken}/sendMessage?chat_id={telegramChatId}&text={Uri.EscapeDataString(message)}&parse_mode=HTML";
+                        await httpClient.GetAsync(url);
+                    }
+                }
+                // Automatic Centralized Relay fallback: route via Local Server Hub using telegram.env credentials
+                else if (_httpClient != null && !string.IsNullOrWhiteSpace(DashboardServerUrl))
+                {
+                    var relayUrl = $"{DashboardServerUrl.TrimEnd('/')}/api/telegram/send";
+                    var payload = JsonSerializer.Serialize(new { message = message });
+                    var content = new StringContent(payload, Encoding.UTF8, "application/json");
+                    await _httpClient.PostAsync(relayUrl, content);
+                }
+            }
+            catch (Exception ex)
+            {
+                Print($"[Telegram Error] Failed to send text message: {ex.Message}");
+            }
+        }
+
+        public async Task CaptureAndSendChartScreenshotAsync(string caption)
+        {
+            if (!enableTelegramAlerts || !sendChartScreenshot || RunningMode != RunningMode.RealTime || Chart == null) return;
+
+            try
+            {
+                string tempPath = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "cTrader_template_screenshot.png");
+                var chartshot = Chart.TakeChartshot();
+
+                System.IO.File.WriteAllBytes(tempPath, chartshot);
+
+                using (var httpClient = new HttpClient())
+                {
+                    httpClient.Timeout = TimeSpan.FromSeconds(15);
+                    string url = $"https://api.telegram.org/bot{telegramBotToken}/sendPhoto";
+
+                    using (var form = new MultipartFormDataContent())
+                    {
+                        form.Add(new StringContent(telegramChatId), "chat_id");
+                        form.Add(new StringContent(caption), "caption");
+                        form.Add(new StringContent("HTML"), "parse_mode");
+
+                        var imageBytes = System.IO.File.ReadAllBytes(tempPath);
+                        var imageContent = new ByteArrayContent(imageBytes);
+                        imageContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
+                        form.Add(imageContent, "photo", System.IO.Path.GetFileName(tempPath));
+
+                        await httpClient.PostAsync(url, form);
+                    }
+                }
+
+                if (System.IO.File.Exists(tempPath))
+                {
+                    System.IO.File.Delete(tempPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                Print($"[Telegram Error] Failed to send chart screenshot: {ex.Message}");
+            }
+        }
+        #endregion
+
+        #region UI Panel Logic
+        private void InitializeUI()
+        {
+            if (!showInfoPanel || Chart == null) return;
+            UpdateUIPanel();
+        }
+
+        private void UpdateUIPanel()
+        {
+            if (!showInfoPanel || Chart == null) return;
+
+            UpdateEquityProtection();
+
+            DateTime utcNow = DateTime.UtcNow;
+            DateTime localTime = utcNow.AddHours(customUTCOffset);
+
+            string licenseStatus = Unlimited_License ? "Unlimited" : (ExpiryDate.ToString("yyyy-MM-dd"));
+            string cbStatus = _isCircuitBreakerActive ? "ðŸ”´ CIRCUIT BREAKER (RISK CUT 50%)" : "ðŸŸ¢ NORMAL";
+            double effRisk = GetEffectiveRiskFactor();
+            double d1AtrVal = (_d1Atr != null && _d1Atr.Result.Count > 0 && _d1Atr.Result.LastValue > 0)
+                ? _d1Atr.Result.LastValue
+                : (atr != null && atr.Result.Count > 0 ? atr.Result.LastValue * 4.0 : 0);
+            double asianAtrRatio = d1AtrVal > 0 && _asianHigh > _asianLow ? ((_asianHigh - _asianLow) / d1AtrVal) * 100.0 : 0;
+            string rangeStr = $"{_asianHigh:F2} / {_asianLow:F2} ({_asianRangePips:F0} pips | {asianAtrRatio:F1}% D1 ATR)";
+            string newsStatus = GetNewsFilterStatusSummary();
+
+            string panelText = $"🤖 Asian Range Judas Sweep AI Bot (SMC)\n" +
+                               $"------------------------------------\n" +
+                               $"Symbol       : {SymbolName}\n" +
+                               $"Time (UTC+{customUTCOffset:F0}) : {localTime:HH:mm:ss}\n" +
+                               $"Killzone     : {_activeKillzone}\n" +
+                               $"Asian Range  : {rangeStr}\n" +
+                               $"News Filter  : {newsStatus}\n" +
+                               $"License      : {licenseStatus}\n" +
+                               $"Peak Equity  : ${FormatAmount(_peakEquity)}\n" +
+                               $"Current DD   : {_currentDrawdownPercent:F1}%\n" +
+                               $"Protection   : {cbStatus}\n" +
+                               $"Active Risk  : {effRisk:F2}% (Base: {riskFactor}%)\n" +
+                               $"DCA Mode     : {(dcaEnable ? "ENABLED" : "DISABLED")}\n" +
+                               $"BreakEven    : {(enableBreakEvenPrice ? (breakEvenMode == BreakEvenTriggerMode.Risk_Reward_Ratio ? $"ON ({breakEvenRrTrigger:F1}R)" : $"ON ({breakEvenTrigger} pips)") : "OFF")}\n" +
+                               $"Active Orders: {Positions.FindAll(label, SymbolName).Length}/{maxPermittedOrder}";
+
+            bool isNewsActive = IsNewsBlackoutActive(out _, out _);
+            Color textColor = (_isCircuitBreakerActive || isNewsActive) ? Color.OrangeRed : Color.LimeGreen;
+            Chart.DrawStaticText("AsianRangeJudasSweepInfoPanel", panelText, VerticalAlignment.Top, HorizontalAlignment.Right, textColor);
+        }
+
+        private string FormatAmount(double amount)
+        {
+            return amount.ToString("N2");
+        }
+        #endregion
+
+        #region AI Agent Data Models
+        public class PositionInfo
+        {
+            public int id { get; set; }
+            public string type { get; set; }
+            public double volume { get; set; }
+            public double entry_price { get; set; }
+            public double current_price { get; set; }
+            public double pnl { get; set; }
+            public double? sl { get; set; }
+            public double? tp { get; set; }
+            public double duration_minutes { get; set; }
+        }
+
+        public class BarData
+        {
+            public string time { get; set; }
+            public double open { get; set; }
+            public double high { get; set; }
+            public double low { get; set; }
+            public double close { get; set; }
+            public double volume { get; set; }
+        }
+
+        public class StrategyData
+        {
+            public double tema1 { get; set; }
+            public double tema2 { get; set; }
+            public double rsi { get; set; }
+            public double adx { get; set; }
+            public double atr { get; set; }
+            public double recent_high { get; set; }
+            public double recent_low  { get; set; }
+            // Asian Range & Judas Sweep fields
+            public double asian_high { get; set; }
+            public double asian_low { get; set; }
+            public double asian_range_pips { get; set; }
+            public double asian_range_daily_atr_percent { get; set; } = 0;
+            public string killzone_session { get; set; } = "NONE";
+            // Gate context fields (pre-filter → AI alignment)
+            public string bias_direction     { get; set; } = "NONE";
+            public string traditional_signal { get; set; } = "NONE";
+            public int    signal_window_bars { get; set; } = 0;
+        }
+
+        public class ActivePosition
+        {
+            public int id { get; set; }
+            public string symbol { get; set; }
+            public string trade_type { get; set; }
+            public double volume { get; set; }
+            public double entry_price { get; set; }
+            public double sl { get; set; }
+            public double tp { get; set; }
+            public string entry_time { get; set; }
+        }
+
+        public class HistoricalTrade
+        {
+            public int position_id { get; set; }
+            public string symbol { get; set; }
+            public string trade_type { get; set; }
+            public double volume { get; set; }
+            public double entry_price { get; set; }
+            public double exit_price { get; set; }
+            public double pnl { get; set; }
+            public string entry_time { get; set; }
+            public string exit_time { get; set; }
+        }
+
+        public class SwingStructure
+        {
+            public double last_swing_high { get; set; }
+            public string swing_high_type { get; set; }
+            public double last_swing_low { get; set; }
+            public string swing_low_type { get; set; }
+            public double prev_swing_high { get; set; }
+            public double prev_swing_low { get; set; }
+            public string market_structure { get; set; }
+        }
+
+        public class TimeframeContext
+        {
+            public string timeframe { get; set; }
+            public double fast_tema { get; set; }
+            public double slow_tema { get; set; }
+            public double rsi { get; set; }
+            public string trend_bias { get; set; }
+            public double high_35 { get; set; }
+            public double low_35 { get; set; }
+            public double close { get; set; }
+            public SwingStructure swing_structure { get; set; }
+        }
+
+        public class MultiTimeframeData
+        {
+            public TimeframeContext current_tf { get; set; }
+            public TimeframeContext h1_tf { get; set; }
+            public TimeframeContext h4_tf { get; set; }
+        }
+
+        public class MarketSnapshot
+        {
+            public string request_id { get; set; }
+            public string bot_id { get; set; }
+            public string symbol { get; set; }
+            public string timeframe { get; set; }
+            public double ask { get; set; }
+            public double bid { get; set; }
+            public double spread_pips { get; set; }
+            public double pip_size { get; set; }
+            public double pip_value { get; set; }
+            public int digits { get; set; }
+            public List<BarData> bars { get; set; }
+            public StrategyData strategy { get; set; }
+            public MultiTimeframeData multi_timeframe { get; set; }
+            public PositionInfo position { get; set; }
+            public List<ActivePosition> active_positions { get; set; }
+            public List<HistoricalTrade> recent_history { get; set; }
+            public string account_number { get; set; }
+            public string account_type { get; set; }
+            public string account_label { get; set; }
+            public double account_balance { get; set; }
+            public double account_equity { get; set; }
+        }
+
+        public class AgentDecision
+        {
+            public string request_id { get; set; }
+            public string bot_id { get; set; }
+            public string symbol { get; set; }
+            public string timeframe { get; set; }
+            public string action { get; set; }
+            public double volume_lots { get; set; }
+            public double sl_pips { get; set; }
+            public double tp_pips { get; set; }
+            public double new_sl_price { get; set; }
+            public double new_tp_price { get; set; }
+            public string reason { get; set; }
+            public double confidence { get; set; }
+        }
+        #endregion
+
+        #region AI Direct Configuration & Auto-Resolution
+        private string _resolvedApiKey = "";
+        private string _resolvedApiUrl = "";
+        private string _resolvedAiModel = "";
+        private string _apiKeySource = "";
+
+        private void ResolveAiDirectConfig()
+        {
+            string defaultUrl = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions";
+            string defaultModel = "qwen3.7-flash";
+
+            _resolvedApiUrl = defaultUrl;
+            _resolvedAiModel = defaultModel;
+            _resolvedApiKey = "";
+            _apiKeySource = "Not Found";
+
+            var searchList = new List<string>
+            {
+                "API_key.env",
+                System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "API_key.env"),
+                System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "API_key.env"),
+                System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "API_key.env"),
+                System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Documents", "GitHub", "cTrader-AI-Trading-Hub", "API_key.env"),
+                System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Documents", "GitHub", "Agent_Gemini_Server", "API_key.env"),
+                System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".gemini", "API_key.env")
+            };
+
+            try
+            {
+                var curDir = new System.IO.DirectoryInfo(System.IO.Directory.GetCurrentDirectory());
+                for (int i = 0; i < 4 && curDir != null; i++)
+                {
+                    string candidate = System.IO.Path.Combine(curDir.FullName, "API_key.env");
+                    if (!searchList.Contains(candidate)) searchList.Add(candidate);
+                    curDir = curDir.Parent;
+                }
+            }
+            catch { }
+
+            string[] keyNames = new string[]
+            {
+                "APIKey",
+                "API_KEY",
+                "QWEN_API_KEY",
+                "DASHSCOPE_API_KEY",
+                "OPENROUTER_API_KEY",
+                "AI_API_KEY",
+                "OPENAI_API_KEY",
+                "GEMINI_API_KEY",
+                "DEEPSEEK_API_KEY"
+            };
+
+            string[] urlNames = new string[]
+            {
+                "OpenAI_compatible",
+                "OPENAI_COMPATIBLE",
+                "AI_ENDPOINT_URL",
+                "API_URL",
+                "OPENAI_BASE_URL",
+                "BASE_URL"
+            };
+
+            string[] modelNames = new string[]
+            {
+                "Model",
+                "MODEL",
+                "AI_MODEL_NAME",
+                "QWEN_MODEL"
+            };
+
+            foreach (var filePath in searchList)
+            {
+                try
+                {
+                    if (System.IO.File.Exists(filePath))
+                    {
+                        var lines = System.IO.File.ReadAllLines(filePath);
+                        foreach (var line in lines)
+                        {
+                            var trimmed = line.Trim();
+                            if (string.IsNullOrWhiteSpace(trimmed) || trimmed.StartsWith("#")) continue;
+
+                            int eqIdx = trimmed.IndexOf('=');
+                            if (eqIdx > 0)
+                            {
+                                string k = trimmed.Substring(0, eqIdx).Trim();
+                                string v = trimmed.Substring(eqIdx + 1).Trim().Trim('"', '\'');
+
+                                if (string.IsNullOrWhiteSpace(v)) continue;
+
+                                if (string.IsNullOrEmpty(_resolvedApiKey))
+                                {
+                                    foreach (var targetKey in keyNames)
+                                    {
+                                        if (string.Equals(k, targetKey, StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            _apiKeySource = $"API_key.env ({targetKey} @ {filePath})";
+                                            _resolvedApiKey = v;
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                if (urlNames.Any(u => string.Equals(k, u, StringComparison.OrdinalIgnoreCase)))
+                                {
+                                    string formattedUrl = v.TrimEnd('/');
+                                    if (!formattedUrl.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        formattedUrl += "/chat/completions";
+                                    }
+                                    _resolvedApiUrl = formattedUrl;
+                                }
+
+                                if (modelNames.Any(m => string.Equals(k, m, StringComparison.OrdinalIgnoreCase)))
+                                {
+                                    _resolvedAiModel = v;
+                                }
+                            }
+                        }
+
+                        if (!string.IsNullOrEmpty(_resolvedApiKey)) break;
+                    }
+                }
+                catch { }
+            }
+
+            if (string.IsNullOrEmpty(_resolvedApiKey))
+            {
+                foreach (var targetKey in keyNames)
+                {
+                    try
+                    {
+                        string envVal = Environment.GetEnvironmentVariable(targetKey);
+                        if (!string.IsNullOrWhiteSpace(envVal))
+                        {
+                            _apiKeySource = $"Environment Variable ({targetKey})";
+                            _resolvedApiKey = envVal.Trim().Trim('"', '\'');
+                            break;
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(AiApiKey))
+            {
+                _apiKeySource = "cBot UI Parameter";
+                _resolvedApiKey = AiApiKey.Trim();
+            }
+
+            // ONLY override _resolvedApiUrl from ApiUrl parameter if ApiUrl is an explicit external cloud URL (NOT a local python server /trade endpoint)
+            if (!string.IsNullOrWhiteSpace(ApiUrl) && 
+                !ApiUrl.Contains("127.0.0.1") && 
+                !ApiUrl.Contains("localhost") && 
+                !ApiUrl.EndsWith("/trade", StringComparison.OrdinalIgnoreCase) && 
+                !string.Equals(ApiUrl, "https://openrouter.ai/api/v1/chat/completions", StringComparison.OrdinalIgnoreCase) && 
+                !string.Equals(ApiUrl, defaultUrl, StringComparison.OrdinalIgnoreCase))
+            {
+                string formattedUrl = ApiUrl.Trim().TrimEnd('/');
+                if (!formattedUrl.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase))
+                {
+                    formattedUrl += "/chat/completions";
+                }
+                _resolvedApiUrl = formattedUrl;
+            }
+
+            if (!string.IsNullOrWhiteSpace(AiModelName) && !string.Equals(AiModelName, "qwen/qwen-2.5-72b-instruct", StringComparison.OrdinalIgnoreCase) && !string.Equals(AiModelName, defaultModel, StringComparison.OrdinalIgnoreCase))
+            {
+                _resolvedAiModel = AiModelName.Trim();
+            }
+        }
+
+        private string ResolveApiKey()
+        {
+            if (string.IsNullOrEmpty(_resolvedApiKey))
+            {
+                ResolveAiDirectConfig();
+            }
+            return _resolvedApiKey;
+        }
+
+        private string GetMaskedApiKey(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key)) return "[EMPTY]";
+            if (key.Length <= 8) return "***";
+            return $"{key.Substring(0, Math.Min(6, key.Length))}***...{key.Substring(Math.Max(0, key.Length - 4))}";
+        }
+
+        private void LogApiKeyResolution()
+        {
+            ResolveAiDirectConfig();
+            if (AiMode == AiConnectionMode.Direct_OpenRouter_DashScope)
+            {
+                if (!string.IsNullOrWhiteSpace(_resolvedApiKey))
+                {
+                    Print($"[AI Auth] âœ… Direct AI Ready | Model: {_resolvedAiModel} | Endpoint: {_resolvedApiUrl} | Key: \"{GetMaskedApiKey(_resolvedApiKey)}\" | Source: {_apiKeySource}");
+                }
+                else
+                {
+                    Print("[AI Auth] âš ï¸ No API Key found in UI parameters, API_key.env, or Environment Variables. Direct AI queries will be blocked until a valid key is provided.");
+                }
+            }
+        }
+        #endregion
+
+        #region AI Agent Decision Parser
+        private static double ParseJsonDouble(JsonElement root, string propName, double defaultVal = 0)
+        {
+            if (!root.TryGetProperty(propName, out var prop)) return defaultVal;
+            if (prop.ValueKind == JsonValueKind.Number && prop.TryGetDouble(out var d)) return d;
+            if (prop.ValueKind == JsonValueKind.String && double.TryParse(prop.GetString(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var ds)) return ds;
+            return defaultVal;
+        }
+
+        private AgentDecision ParseAiDecision(string rawText, string requestId, string sym, string tf)
+        {
+            if (string.IsNullOrWhiteSpace(rawText)) return null;
+            string cleanText = rawText.Trim();
+
+            // 1. Try finding markdown JSON block ```json ... ```
+            var match = Regex.Match(cleanText, @"```(?:json)?\s*(\{.*?\})\s*```", RegexOptions.Singleline);
+            string jsonStr = match.Success ? match.Groups[1].Value : cleanText;
+
+            // 2. Try finding raw JSON object if markdown block was absent
+            if (!match.Success)
+            {
+                var braceMatch = Regex.Match(cleanText, @"(\{[\s\S]*\})");
+                if (braceMatch.Success) jsonStr = braceMatch.Groups[1].Value;
+            }
+
+            try
+            {
+                using (var doc = JsonDocument.Parse(jsonStr))
+                {
+                    var root = doc.RootElement;
+                    string action = root.TryGetProperty("action", out var actProp) ? actProp.GetString() : "HOLD";
+                    if (string.IsNullOrWhiteSpace(action)) action = "HOLD";
+                    action = action.Trim().ToUpperInvariant();
+
+                    double vol = ParseJsonDouble(root, "volume_lots", 0.01);
+                    double sl = ParseJsonDouble(root, "sl_pips", 0);
+                    double tp = ParseJsonDouble(root, "tp_pips", 0);
+                    double newSl = ParseJsonDouble(root, "new_sl_price", 0);
+                    double newTp = ParseJsonDouble(root, "new_tp_price", 0);
+                    double conf = ParseJsonDouble(root, "confidence", 80.0);
+                    string reason = root.TryGetProperty("reason", out var rProp) ? rProp.GetString() : "Decision generated by AI Agent";
+
+                    return new AgentDecision
+                    {
+                        request_id = requestId,
+                        bot_id = BotId,
+                        symbol = sym,
+                        timeframe = tf,
+                        action = action,
+                        volume_lots = vol,
+                        sl_pips = sl,
+                        tp_pips = tp,
+                        new_sl_price = newSl,
+                        new_tp_price = newTp,
+                        reason = reason,
+                        confidence = conf
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                Print($"[AI Parse Error] Failed to parse JSON: {ex.Message} | Raw text: {cleanText.Substring(0, Math.Min(120, cleanText.Length))}");
+                return null;
+            }
+        }
+        #endregion
+
+        #region AI Agent Communication
+        private int _isAgentQuerying = 0;
+
+        private SwingStructure DetectSwingStructure(Bars tfBars)
+        {
+            if (tfBars == null || tfBars.Count < 10)
+            {
+                return new SwingStructure
+                {
+                    last_swing_high = 0,
+                    swing_high_type = "N/A",
+                    last_swing_low = 0,
+                    swing_low_type = "N/A",
+                    prev_swing_high = 0,
+                    prev_swing_low = 0,
+                    market_structure = "SIDEWAYS"
+                };
+            }
+
+            var swingHighs = new List<double>();
+            var swingLows = new List<double>();
+
+            int count = tfBars.Count;
+            int lookback = Math.Min(60, count - 3);
+            for (int i = 2; i <= lookback; i++)
+            {
+                int idx = count - 1 - i;
+                if (idx < 2) break;
+
+                double high = tfBars.HighPrices[idx];
+                if (high > tfBars.HighPrices[idx - 1] && high > tfBars.HighPrices[idx - 2] &&
+                    high >= tfBars.HighPrices[idx + 1] && high >= tfBars.HighPrices[idx + 2])
+                {
+                    if (swingHighs.Count == 0 || Math.Abs(swingHighs[swingHighs.Count - 1] - high) > (Symbol.PipSize * 10))
+                    {
+                        swingHighs.Add(high);
+                    }
+                }
+
+                double low = tfBars.LowPrices[idx];
+                if (low < tfBars.LowPrices[idx - 1] && low < tfBars.LowPrices[idx - 2] &&
+                    low <= tfBars.LowPrices[idx + 1] && low <= tfBars.LowPrices[idx + 2])
+                {
+                    if (swingLows.Count == 0 || Math.Abs(swingLows[swingLows.Count - 1] - low) > (Symbol.PipSize * 10))
+                    {
+                        swingLows.Add(low);
+                    }
+                }
+
+                if (swingHighs.Count >= 2 && swingLows.Count >= 2) break;
+            }
+
+            int count20 = Math.Min(20, count);
+            double lastSh = swingHighs.Count > 0 ? swingHighs[0] : tfBars.HighPrices.Maximum(count20);
+            double prevSh = swingHighs.Count > 1 ? swingHighs[1] : lastSh;
+            string shType = lastSh > prevSh ? "HH" : (lastSh < prevSh ? "LH" : "EH");
+
+            double lastSl = swingLows.Count > 0 ? swingLows[0] : tfBars.LowPrices.Minimum(count20);
+            double prevSl = swingLows.Count > 1 ? swingLows[1] : lastSl;
+            string slType = lastSl > prevSl ? "HL" : (lastSl < prevSl ? "LL" : "EL");
+
+            string structType = "SIDEWAYS";
+            if (shType == "HH" && slType == "HL") structType = "BULLISH_HH_HL";
+            else if (shType == "LH" && slType == "LL") structType = "BEARISH_LH_LL";
+            else if (shType == "HH" && slType == "LL") structType = "EXPANDING_CHOCH";
+            else if (shType == "LH" && slType == "HL") structType = "CONTRACTING_RANGE";
+
+            return new SwingStructure
+            {
+                last_swing_high = Math.Round(lastSh, Symbol.Digits),
+                swing_high_type = shType,
+                last_swing_low = Math.Round(lastSl, Symbol.Digits),
+                swing_low_type = slType,
+                prev_swing_high = Math.Round(prevSh, Symbol.Digits),
+                prev_swing_low = Math.Round(prevSl, Symbol.Digits),
+                market_structure = structType
+            };
+        }
+
+        private TimeframeContext BuildTimeframeContext(string tfName, Bars tfBars, MovingAverage fastMa, MovingAverage slowMa, RelativeStrengthIndex rsiInd)
+        {
+            if (tfBars == null || tfBars.Count == 0)
+            {
+                return new TimeframeContext
+                {
+                    timeframe = tfName,
+                    trend_bias = "NEUTRAL",
+                    fast_tema = 0,
+                    slow_tema = 0,
+                    rsi = 50,
+                    high_35 = 0,
+                    low_35 = 0,
+                    close = 0,
+                    swing_structure = new SwingStructure()
+                };
+            }
+
+            double fVal = fastMa != null && fastMa.Result.Count > 0 ? fastMa.Result.LastValue : tfBars.ClosePrices.LastValue;
+            double sVal = slowMa != null && slowMa.Result.Count > 0 ? slowMa.Result.LastValue : tfBars.ClosePrices.LastValue;
+            double rVal = rsiInd != null && rsiInd.Result.Count > 0 ? rsiInd.Result.LastValue : 50.0;
+            double cVal = tfBars.ClosePrices.LastValue;
+
+            int count35 = Math.Min(35, tfBars.Count);
+            double h35 = tfBars.HighPrices.Maximum(count35);
+            double l35 = tfBars.LowPrices.Minimum(count35);
+
+            string bias = "NEUTRAL";
+            if (fVal > sVal && cVal > sVal) bias = "BULLISH";
+            else if (fVal < sVal && cVal < sVal) bias = "BEARISH";
+            else bias = "SIDEWAYS";
+
+            var swingStruct = DetectSwingStructure(tfBars);
+
+            return new TimeframeContext
+            {
+                timeframe = tfName,
+                trend_bias = bias,
+                fast_tema = Math.Round(fVal, Symbol.Digits),
+                slow_tema = Math.Round(sVal, Symbol.Digits),
+                rsi = Math.Round(rVal, 1),
+                high_35 = Math.Round(h35, Symbol.Digits),
+                low_35 = Math.Round(l35, Symbol.Digits),
+                close = Math.Round(cVal, Symbol.Digits),
+                swing_structure = swingStruct
+            };
+        }
+
+        private string BuildDualModePrompt(MarketSnapshot snapshot, StrategyData stratData, List<BarData> barList)
+        {
+            double spreadPips = Math.Round((snapshot.ask - snapshot.bid) / Symbol.PipSize, 1);
+            double atrPips = Symbol.PipSize > 0 ? Math.Round(stratData.atr / Symbol.PipSize, 0) : 0;
+            int openPosCount = snapshot.active_positions != null ? snapshot.active_positions.Count : 0;
+            bool hasOpenPositions = openPosCount > 0 || snapshot.position != null;
+
+            // 1. Format 50 chronological bars (increased from 35 for richer Price Action context)
+            int barCount = Math.Min(50, barList.Count);
+            var chronologicalBars = barList.Take(barCount).Reverse().ToList();
+            var barLines = new List<string>();
+            for (int i = 0; i < chronologicalBars.Count; i++)
+            {
+                var b = chronologicalBars[i];
+                int barIdx = -(chronologicalBars.Count - 1 - i);
+                barLines.Add($"Bar[{barIdx}]: O={b.open:F2}, H={b.high:F2}, L={b.low:F2}, C={b.close:F2}, V={b.volume:F0}");
+            }
+            string barsFormatted = string.Join("\n", barLines);
+
+            // 2. Format recent trade history (last 24h, max 5 trades) with Session Performance summary
+            string historyFormatted = "No recent trades in the last 24h.";
+            if (snapshot.recent_history != null && snapshot.recent_history.Count > 0)
+            {
+                double totalPnl = snapshot.recent_history.Sum(h => h.pnl);
+                int winCount = snapshot.recent_history.Count(h => h.pnl > 0);
+                int lossCount = snapshot.recent_history.Count(h => h.pnl < 0);
+                string summaryHeader = $"[Session Performance: 24h PnL = {(totalPnl >= 0 ? "+" : "")}${totalPnl:F2} | Wins: {winCount}, Losses: {lossCount}]";
+
+                var histLines = snapshot.recent_history.Select(h =>
+                    $"  - {h.trade_type} {h.volume:F2} lots @ {h.entry_price:F2} -> Exit {h.exit_price:F2} | PnL: {(h.pnl >= 0 ? "+" : "")}${h.pnl:F2} | Closed: {h.exit_time}"
+                );
+                historyFormatted = summaryHeader + "\n" + string.Join("\n", histLines);
+            }
+            string mtfSummary = "Current Timeframe Only";
+            if (snapshot.multi_timeframe != null)
+            {
+                var cur = snapshot.multi_timeframe.current_tf;
+                var h1 = snapshot.multi_timeframe.h1_tf;
+                var h4 = snapshot.multi_timeframe.h4_tf;
+                var lines = new List<string>();
+                foreach (var item in new[] { (cur, $"Current ({cur?.timeframe ?? "M15"})"), (h1, "Higher TF (H1)"), (h4, "Major TF (H4)") })
+                {
+                    var tfCtx = item.Item1;
+                    var label = item.Item2;
+                    if (tfCtx != null)
+                    {
+                        string swStr = "";
+                        if (tfCtx.swing_structure != null)
+                        {
+                            var sw = tfCtx.swing_structure;
+                            swStr = $" | Swings: High={sw.last_swing_high} ({sw.swing_high_type}), Low={sw.last_swing_low} ({sw.swing_low_type}), PrevH={sw.prev_swing_high}, PrevL={sw.prev_swing_low} [Struct: {sw.market_structure}]";
+                        }
+                        lines.Add($"- {label}: Bias={tfCtx.trend_bias} | FastMA={tfCtx.fast_tema} | SlowMA={tfCtx.slow_tema} | RSI={tfCtx.rsi}{swStr}");
+                    }
+                }
+                if (lines.Count > 0) mtfSummary = string.Join("\n", lines);
+            }
+
+            if (!hasOpenPositions)
+            {
+                // === NEW ENTRY DISCOVERY MODE ===
+                return $@"You are a World-Class Institutional Forex Specialist & Quantitative Trader using SMART MONEY CONCEPTS (SMC) & Asian Range Judas Sweep.
+
+=== NEW ENTRY DISCOVERY MODE ===
+The cBot currently HAS NO OPEN POSITIONS. Your mission is to analyze the Asian Range Liquidity Sweep and identify high-probability Sniper entries.
+
+=== 1. MARKET SNAPSHOT ===
+- Symbol: {snapshot.symbol} | Timeframe: {snapshot.timeframe}
+- Current Market Prices: Ask={snapshot.ask}, Bid={snapshot.bid} | Spread: {spreadPips:F1} pips
+- Account: Balance=${snapshot.account_balance:F2} | Equity=${snapshot.account_equity:F2}
+
+=== 2. ASIAN RANGE & JUDAS SWEEP GATE CONTEXT ===
+- Asian Session Range (00:00 - 06:00 UTC): High={stratData.asian_high:F2} | Low={stratData.asian_low:F2} | Range={stratData.asian_range_pips:F0} pips ({stratData.asian_range_daily_atr_percent:F1}% of Daily ATR)
+- Active Killzone Window: {stratData.killzone_session}
+- Gate Signal Trigger: {stratData.traditional_signal} (Bias: {stratData.bias_direction})
+- Bars Since Sweep: {stratData.signal_window_bars} bar(s)
+⚠️ CONSTRAINT:
+  - Gate=BUY -> Price swept Asian Low & rejected back up. You MAY ONLY suggest 'BUY' or 'HOLD'. NEVER 'SELL'.
+  - Gate=SELL -> Price swept Asian High & rejected back down. You MAY ONLY suggest 'SELL' or 'HOLD'. NEVER 'BUY'.
+  - Gate=MANAGE_ONLY -> Do NOT open new positions. Only 'ADJUST', 'HOLD', or 'CLOSE_ALL'.
+  - Bars Since Sweep > 3 -> Signal is STALE. Strongly prefer 'HOLD'.
+  - volume_lots -> Always output 0. Volume is controlled by the cBot risk engine.
+
+=== 3. MULTI-TIMEFRAME TREND BIAS (M15 + H1 + H4) ===
+{mtfSummary}
+
+=== 4. TECHNICAL INDICATORS & SWINGS ===
+- Fast EMA: {stratData.tema1:F2} | Slow EMA: {stratData.tema2:F2}
+- RSI (14): {stratData.rsi:F1} | ATR (14 Volatility): {atrPips:F0} pips
+- Major Swing High (BSL / Resistance): {stratData.recent_high:F2}
+- Major Swing Low (SSL / Support): {stratData.recent_low:F2}
+
+=== 5. RECENT OHLCV CANDLE SEQUENCE (Last {barCount} bars, chronological) ===
+{barsFormatted}
+
+=== 6. RECENT TRADE HISTORY (Last 24h, Max 5 trades) ===
+{historyFormatted}
+
+=== 7. SMART MONEY CONCEPTS (SMC) & JUDAS SWEEP RULES ===
+1. Judas Swing Reversal: Price fakeouts above Asian High or below Asian Low during London/NY Killzones, sweeps liquidity (BSL/SSL), and rejects back inside range.
+2. Entry Confirmation: Validated Order Block, Fair Value Gap (FVG), or pinbar rejection on M15.
+3. Technical SL & TP: Place SL safely beyond the sweep extreme spike (Order Block / Swing High-Low). Minimum SL must be >= {Math.Round(Math.Max(spreadPips * 10.0, atrPips * 0.8), 0)} pips (10x Spread / 0.8x ATR). 1 pip = {Symbol.PipSize} in price. TP targeted at opposing Asian Range boundary (Asian Low for SELL, Asian High for BUY) or target liquidity pool.
+
+=== 8. VALID ACTIONS ===
+- BUY: Validated Bullish Judas Sweep (Asian Low fakeout) + Order Block bounce.
+- SELL: Validated Bearish Judas Sweep (Asian High fakeout) + Order Block rejection.
+- HOLD: Choppy consolidation inside Asian Range, no sweep, or conflicting HTF bias.
+
+Reply strictly with JSON object.";
+            }
+            else
+            {
+                // === ACTIVE POSITION MANAGEMENT MODE ===
+                var posLines = new List<string>();
+                if (snapshot.position != null)
+                {
+                    posLines.Add($"- Primary Position: {snapshot.position.type} {snapshot.position.volume:F2} lots @ Entry={snapshot.position.entry_price} | CurrentPrice={snapshot.position.current_price} | PnL=${snapshot.position.pnl:F2} | SL={snapshot.position.sl} | TP={snapshot.position.tp} | Duration={snapshot.position.duration_minutes:F1} mins");
+                }
+                if (snapshot.active_positions != null)
+                {
+                    foreach (var p in snapshot.active_positions)
+                    {
+                        posLines.Add($"- Position ID {p.id}: {p.trade_type} {p.volume:F2} lots @ Entry={p.entry_price} | SL={p.sl} | TP={p.tp} | Opened={p.entry_time}");
+                    }
+                }
+                string runningPositionsStr = posLines.Count > 0 ? string.Join("\n", posLines) : "No position details.";
+
+                return $@"You are a World-Class Institutional Forex Specialist & Quantitative Risk Manager using SMART MONEY CONCEPTS (SMC) & Price Action.
+
+=== ACTIVE POSITION MANAGEMENT MODE ===
+The cBot currently HAS OPEN POSITIONS in the order book. Your PRIMARY MISSION is to EVALUATE AND MANAGE THESE EXISTING POSITIONS (Protect capital, lock in profits, adjust SL/TP, or exit safely).
+
+=== 1. ACTIVE ORDER BOOK SNAPSHOT ===
+- Symbol: {snapshot.symbol} | Timeframe: {snapshot.timeframe}
+- Current Market Prices: Ask={snapshot.ask}, Bid={snapshot.bid} | Spread: {spreadPips:F1} pips
+- Account: Balance=${snapshot.account_balance:F2} | Equity=${snapshot.account_equity:F2}
+- Running Positions:
+{runningPositionsStr}
+
+=== 2. TRADITIONAL STRATEGY GATE â€” MANDATORY CONSTRAINT ===
+- Gate Direction: {stratData.bias_direction}
+- Signal Type: {stratData.traditional_signal}
+- Bars Since Cross: {stratData.signal_window_bars} bar(s)
+âš ï¸ CONSTRAINT:
+  - Gate=MANAGE_ONLY â†’ Focus on managing existing positions. Do NOT open new ones.
+  - volume_lots â†’ Always output 0. Volume is controlled by the cBot risk engine.
+
+=== 3. MULTI-TIMEFRAME TREND BIAS (M15 + H1 + H4) ===
+{mtfSummary}
+
+=== 4. TECHNICAL INDICATORS & SWINGS ===
+- Fast EMA: {stratData.tema1:F2} | Slow EMA: {stratData.tema2:F2}
+- RSI (14): {stratData.rsi:F1} | ATR (14 Volatility): {atrPips:F0} pips
+- Major Swing High (Resistance): {stratData.recent_high:F2}
+- Major Swing Low (Support): {stratData.recent_low:F2}
+
+=== 5. RECENT OHLCV CANDLE SEQUENCE (Last {barCount} bars, chronological) ===
+{barsFormatted}
+
+=== 6. POSITION MANAGEMENT EVALUATION RULES ===
+1. Trend & Structure Health: Check if current structure still favors the open position.
+2. Action Decisions:
+   - HOLD: Position healthy and progressing towards TP.
+   - ADJUST: Move SL to Break-Even (when in >= 1:1 RR profit) or Trailing Stop behind new Order Block. Specify new_sl_price and/or new_tp_price (or sl_pips/tp_pips).
+   - CLOSE_ALL: Emergency exit if major opposing CHoCH reversal occurs against the position.
+   - BUY / SELL: Scale-in ONLY if trend is extremely strong with fresh unmitigated Order Block.
+
+Reply strictly with JSON object.";
+            }
+        }
+
+        private void CheckEventDrivenAiTriggers()
+        {
+            if (!EnableEventDrivenAi || _httpClient == null) return;
+            if (RunningMode != RunningMode.RealTime) return;
+            if (Server.Time < _lastEventDrivenAiQueryTime.AddSeconds(EventAiCooldownSeconds)) return;
+            if (Server.Time < _aiCooldownUntil) return;
+            if (_isAgentQuerying != 0) return;
+
+            var openPositions = Positions.FindAll(label, SymbolName);
+            if (openPositions.Length == 0) return;
+
+            bool shouldQuery = false;
+            string triggerReason = "";
+            double currentAtr = (atr != null && atr.Result.Count > 0) ? atr.Result.LastValue : (Symbol.PipSize * 20);
+
+            foreach (var pos in openPositions)
+            {
+                double pnlPips = pos.Pips;
+                double slDistancePips = pos.StopLoss.HasValue 
+                    ? Math.Abs(pos.EntryPrice - pos.StopLoss.Value) / Symbol.PipSize 
+                    : stoplossPip;
+
+                if (slDistancePips <= 0) slDistancePips = stoplossPip > 0 ? stoplossPip : 100;
+
+                double currentRr = pnlPips / slDistancePips;
+
+                // 1. Profit Milestone Trigger: Floating Profit >= Milestone RR (e.g. 1.5R)
+                if (currentRr >= ProfitMilestoneRr && !_positionsMilestoneTriggered.Contains(pos.Id))
+                {
+                    _positionsMilestoneTriggered.Add(pos.Id);
+                    shouldQuery = true;
+                    triggerReason = $"Profit Milestone {currentRr:F1}R reached ({pnlPips:F1} pips on #{pos.Id})";
+                    break;
+                }
+
+                // 2. Volatility Spike Trigger: Current Bar Excursion >= ATR Multiplier (e.g. 1.5 * ATR)
+                if (Bars.Count > 0 && currentAtr > 0)
+                {
+                    double barOpen = Bars.OpenPrices.LastValue;
+                    double currentPrice = pos.TradeType == TradeType.Buy ? Symbol.Bid : Symbol.Ask;
+                    double barExcursion = Math.Abs(currentPrice - barOpen);
+                    if (barExcursion >= (VolatilitySpikeAtrMultiplier * currentAtr))
+                    {
+                        shouldQuery = true;
+                        triggerReason = $"Volatility Surge {barExcursion / currentAtr:F1}x ATR ({barExcursion / Symbol.PipSize:F1} pips)";
+                        break;
+                    }
+                }
+            }
+
+            if (shouldQuery)
+            {
+                _lastEventDrivenAiQueryTime = Server.Time;
+                Print($"[Hybrid Event AI] ⚡ Mid-candle trigger activated: {triggerReason}. Transmitting to AI...");
+                _ = SendStateToAgentAsync("MANAGE_ONLY");
+            }
+        }
+
+        private async Task SendStateToAgentAsync(string allowedDirection = "NONE")
+        {
+            if (RunningMode != RunningMode.RealTime) return;
+            if (Interlocked.CompareExchange(ref _isAgentQuerying, 1, 0) != 0) return;
+
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(allowedDirection) && allowedDirection != "NONE")
+                {
+                    _allowedAiDirection = allowedDirection;
+                }
+
+                // Check Safety Guard Cooldown
+                if (Server.Time < _aiCooldownUntil)
+                {
+                    Print($"[AI Agent Safety Guard] Cooldown active until {_aiCooldownUntil:HH:mm:ss} UTC. Direct AI query skipped.");
+                    return;
+                }
+
+                var barList = new List<BarData>();
+                int maxBars = Math.Min(50, Bars.Count);
+                for (int i = 1; i <= maxBars; i++)
+                {
+                    int index = Bars.Count - i;
+                    barList.Add(new BarData
+                    {
+                        time = Bars.OpenTimes[index].ToString("o"),
+                        open = Bars.OpenPrices[index],
+                        high = Bars.HighPrices[index],
+                        low = Bars.LowPrices[index],
+                        close = Bars.ClosePrices[index],
+                        volume = Bars.TickVolumes[index]
+                    });
+                }
+
+                double recentHigh = Bars.HighPrices.Maximum(35);
+                double recentLow = Bars.LowPrices.Minimum(35);
+                double effectiveDailyAtr = (_d1Atr != null && _d1Atr.Result.Count > 0 && _d1Atr.Result.LastValue > 0)
+                    ? _d1Atr.Result.LastValue
+                    : (atr != null && atr.Result.Count > 0 ? atr.Result.LastValue * 4.0 : 0);
+                double asianRangePrice = _asianHigh > _asianLow ? (_asianHigh - _asianLow) : 0;
+                double asianDailyAtrPercent = effectiveDailyAtr > 0 ? (asianRangePrice / effectiveDailyAtr) * 100.0 : 0;
+
+                var stratData = new StrategyData
+                {
+                    tema1 = fastEma != null && fastEma.Result.Count > 0 ? fastEma.Result.LastValue : 0,
+                    tema2 = slowEma != null && slowEma.Result.Count > 0 ? slowEma.Result.LastValue : 0,
+                    rsi = rsi != null && rsi.Result.Count > 0 ? rsi.Result.LastValue : 0,
+                    adx = 0,
+                    atr = atr != null && atr.Result.Count > 0 ? atr.Result.LastValue : 0,
+                    recent_high = recentHigh,
+                    recent_low = recentLow,
+                    asian_high = _asianHigh,
+                    asian_low = _asianLow,
+                    asian_range_pips = _asianRangePips,
+                    asian_range_daily_atr_percent = Math.Round(asianDailyAtrPercent, 1),
+                    killzone_session = _activeKillzone,
+                    bias_direction = _allowedAiDirection,
+                    traditional_signal = _traditionalSignal,
+                    signal_window_bars = _barsSinceCross
+                };
+
+                var curTfContext = BuildTimeframeContext(TimeFrame.Name, Bars, fastEma, slowEma, rsi);
+                var h1TfContext = BuildTimeframeContext("H1", _h1Bars, _h1FastEma, _h1SlowEma, _h1Rsi);
+                var h4TfContext = BuildTimeframeContext("H4", _h4Bars, _h4FastEma, _h4SlowEma, _h4Rsi);
+
+                var mtfData = new MultiTimeframeData
+                {
+                    current_tf = curTfContext,
+                    h1_tf = h1TfContext,
+                    h4_tf = h4TfContext
+                };
+
+                var activePositionsList = new List<ActivePosition>();
+                foreach (var pos in Positions.FindAll(label, SymbolName))
+                {
+                    activePositionsList.Add(new ActivePosition
+                    {
+                        id = pos.Id,
+                        symbol = pos.SymbolName,
+                        trade_type = pos.TradeType.ToString(),
+                        volume = Math.Round(pos.VolumeInUnits / Symbol.LotSize, 2),
+                        entry_price = pos.EntryPrice,
+                        sl = pos.StopLoss ?? 0,
+                        tp = pos.TakeProfit ?? 0,
+                        entry_time = pos.EntryTime.ToString("yyyy-MM-dd HH:mm:ss")
+                    });
+                }
+
+                var recentHistoryList = new List<HistoricalTrade>();
+                var recentTime = Server.Time.AddDays(-1);
+                foreach (var hist in History.Where(h => h.Label == label && h.SymbolName == SymbolName && h.ClosingTime >= recentTime)
+                                            .OrderByDescending(h => h.ClosingTime)
+                                            .Take(5))
+                {
+                    recentHistoryList.Add(new HistoricalTrade
+                    {
+                        position_id = hist.PositionId,
+                        symbol = hist.SymbolName,
+                        trade_type = hist.TradeType.ToString(),
+                        volume = Math.Round(hist.VolumeInUnits / Symbol.LotSize, 2),
+                        entry_price = hist.EntryPrice,
+                        exit_price = hist.ClosingPrice,
+                        pnl = hist.NetProfit,
+                        entry_time = hist.EntryTime.ToString("yyyy-MM-dd HH:mm:ss"),
+                        exit_time = hist.ClosingTime.ToString("yyyy-MM-dd HH:mm:ss")
+                    });
+                }
+
+                string currentRequestId = Guid.NewGuid().ToString("N");
+
+                var snapshot = new MarketSnapshot
+                {
+                    request_id = currentRequestId,
+                    bot_id = BotId,
+                    symbol = SymbolName,
+                    timeframe = TimeFrame.Name,
+                    ask = Symbol.Ask,
+                    bid = Symbol.Bid,
+                    spread_pips = Symbol.PipSize > 0 ? Math.Round((Symbol.Ask - Symbol.Bid) / Symbol.PipSize, 1) : 0,
+                    pip_size = Symbol.PipSize,
+                    pip_value = Symbol.PipValue,
+                    digits = Symbol.Digits,
+                    bars = barList,
+                    strategy = stratData,
+                    multi_timeframe = mtfData,
+                    active_positions = activePositionsList,
+                    recent_history = recentHistoryList,
+                    account_number = Account.Number.ToString(),
+                    account_type = Account.IsLive ? "live" : "demo",
+                    account_label = string.IsNullOrWhiteSpace(AccountLabel) ? Account.BrokerName : $"{Account.BrokerName} ({AccountLabel.Trim()})",
+                    account_balance = Account.Balance,
+                    account_equity = Account.Equity
+                };
+
+                var positions = Positions.FindAll(label, SymbolName);
+                if (positions.Length > 0)
+                {
+                    var p = positions[0];
+                    snapshot.position = new PositionInfo
+                    {
+                        id = p.Id,
+                        type = p.TradeType.ToString(),
+                        volume = p.VolumeInUnits / Symbol.LotSize,
+                        entry_price = p.EntryPrice,
+                        current_price = p.TradeType == TradeType.Buy ? Symbol.Bid : Symbol.Ask,
+                        pnl = p.NetProfit,
+                        sl = p.StopLoss,
+                        tp = p.TakeProfit,
+                        duration_minutes = (Server.Time - p.EntryTime).TotalMinutes
+                    };
+                }
+
+                if (AiMode == AiConnectionMode.Direct_OpenRouter_DashScope)
+                {
+                    await QueryDirectQwenApiAsync(snapshot, stratData, barList, currentRequestId);
+                }
+                else
+                {
+                    var json = JsonSerializer.Serialize(snapshot);
+                    await AskAgentAsync(json, currentRequestId);
+                }
+            }
+            catch (Exception ex)
+            {
+                Print($"[Agent Error] Failed to process market state: {ex.Message}");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _isAgentQuerying, 0);
+            }
+        }
+
+        private async Task QueryDirectQwenApiAsync(MarketSnapshot snapshot, StrategyData stratData, List<BarData> barList, string expectedRequestId)
+        {
+            try
+            {
+                if (_httpClient == null || snapshot == null) return;
+
+                ResolveAiDirectConfig();
+                string effectiveKey = _resolvedApiKey;
+                if (string.IsNullOrWhiteSpace(effectiveKey))
+                {
+                    HandleAiFailure("No valid AI API Key found in parameters, API_key.env, or Environment Variables.");
+                    return;
+                }
+
+                string targetUrl = _resolvedApiUrl;
+                string model = _resolvedAiModel;
+
+                Print($"[Qwen AI Direct] Querying {model} via {targetUrl} [Req: {expectedRequestId.Substring(0, 8)}...] (Auth: {_apiKeySource})...");
+
+                string systemPrompt = "You are an elite Algorithmic Trading AI Co-Pilot for cTrader. Analyze the real-time market snapshot and output strictly valid JSON format with keys: \"action\" (\"BUY\"|\"SELL\"|\"HOLD\"|\"ADJUST\"|\"CLOSE_ALL\"), \"volume_lots\" (number), \"sl_pips\" (number), \"tp_pips\" (number), \"new_sl_price\" (number), \"new_tp_price\" (number), \"confidence\" (number between 0 and 100), \"reason\" (concise technical rationale). Output NO markdown explanations outside the JSON object.";
+
+                string userPrompt = BuildDualModePrompt(snapshot, stratData, barList);
+
+                var payloadObj = new
+                {
+                    model = model,
+                    messages = new object[]
+                    {
+                        new { role = "system", content = systemPrompt },
+                        new { role = "user", content = userPrompt }
+                    },
+                    temperature = 0.2,
+                    response_format = new { type = "json_object" }
+                };
+
+                string jsonPayload = JsonSerializer.Serialize(payloadObj);
+                var request = new HttpRequestMessage(System.Net.Http.HttpMethod.Post, targetUrl)
+                {
+                    Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json")
+                };
+
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", effectiveKey);
+
+                var response = await _httpClient.SendAsync(request);
+                if (!response.IsSuccessStatusCode)
+                {
+                    string errContent = await response.Content.ReadAsStringAsync();
+                    HandleAiFailure($"HTTP {(int)response.StatusCode} {response.ReasonPhrase}: {errContent}");
+                    return;
+                }
+
+                string responseBody = await response.Content.ReadAsStringAsync();
+                AgentDecision decision = null;
+
+                using (var doc = JsonDocument.Parse(responseBody))
+                {
+                    if (doc.RootElement.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
+                    {
+                        var msg = choices[0].GetProperty("message");
+                        if (msg.TryGetProperty("content", out var contentProp))
+                        {
+                            string contentStr = contentProp.GetString();
+                            decision = ParseAiDecision(contentStr, expectedRequestId, snapshot.symbol, snapshot.timeframe);
+                        }
+                    }
+                }
+
+                if (decision != null)
+                {
+                    _consecutiveAiFailures = 0; // Reset Safety Guard on success
+
+                    // Confidence check
+                    if (decision.confidence < AiConfidenceThreshold && (decision.action == "BUY" || decision.action == "SELL"))
+                    {
+                        Print($"[Qwen AI Notice] Confidence {decision.confidence:F1}% is below threshold {AiConfidenceThreshold:F1}%. Action adjusted to HOLD.");
+                        decision.action = "HOLD";
+                        decision.reason = $"Confidence {decision.confidence:F1}% < {AiConfidenceThreshold:F1}%. {decision.reason}";
+                    }
+
+                    BeginInvokeOnMainThread(() => ExecuteDecision(decision, expectedRequestId));
+
+                    // Async Fire-and-forget Dashboard Telemetry
+                    if (EnableDashboardTelemetry && !string.IsNullOrWhiteSpace(DashboardServerUrl))
+                    {
+                        _ = DispatchDashboardTelemetryAsync(snapshot, decision);
+                    }
+                }
+                else
+                {
+                    HandleAiFailure("Invalid or empty JSON returned in choices[0].message.content");
+                }
+            }
+            catch (Exception ex)
+            {
+                HandleAiFailure(ex.Message);
+            }
+        }
+
+        private void HandleAiFailure(string errorMessage)
+        {
+            _consecutiveAiFailures++;
+            Print($"[AI Agent Warning] Direct AI Query failed ({_consecutiveAiFailures}/3): {errorMessage}");
+
+            if (_consecutiveAiFailures >= 3)
+            {
+                _aiCooldownUntil = DateTime.UtcNow.AddMinutes(15);
+                Print($"[AI Agent Safety Guard] 🚨 3 consecutive AI failures reached! Pausing AI evaluation for 15 minutes until {_aiCooldownUntil:HH:mm:ss} UTC.");
+                _ = SendTelegramAlertAsync($"🚨 <b>[AI Agent Safety Guard]</b>\nQwen AI API encountered 3 consecutive failures!\nBot evaluation is suspended for 15 minutes until <b>{_aiCooldownUntil:HH:mm:ss} UTC</b>.\n<i>Last error: {errorMessage}</i>");
+            }
+        }
+
+        private async Task DispatchDashboardTelemetryAsync(MarketSnapshot snapshot, AgentDecision decision)
+        {
+            try
+            {
+                if (_httpClient == null || !EnableDashboardTelemetry || string.IsNullOrWhiteSpace(DashboardServerUrl) || snapshot == null) return;
+                var baseUri = DashboardServerUrl.TrimEnd('/');
+                var url = $"{baseUri}/api/tick";
+
+                var payload = new
+                {
+                    bot_id = snapshot.bot_id,
+                    account_number = snapshot.account_number,
+                    symbol = snapshot.symbol,
+                    bid = snapshot.bid,
+                    ask = snapshot.ask,
+                    equity = snapshot.account_equity,
+                    balance = snapshot.account_balance,
+                    decision = decision,
+                    snapshot = snapshot
+                };
+
+                var json = JsonSerializer.Serialize(payload);
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                await _httpClient.PostAsync(url, content);
+            }
+            catch { }
+        }
+
+        private async Task AskAgentAsync(string jsonPayload, string expectedRequestId)
+        {
+            try
+            {
+                if (_httpClient == null) return;
+                string localTargetUrl = ApiUrl;
+                if (string.IsNullOrWhiteSpace(localTargetUrl) || !localTargetUrl.EndsWith("/trade", StringComparison.OrdinalIgnoreCase))
+                {
+                    var baseUri = !string.IsNullOrWhiteSpace(DashboardServerUrl) ? DashboardServerUrl.TrimEnd('/') : "http://127.0.0.1:8181";
+                    localTargetUrl = $"{baseUri}/trade";
+                }
+
+                Print($"[AI Agent] Sending market snapshot for {SymbolName} ({TimeFrame.Name}) [Req: {expectedRequestId.Substring(0, 8)}...] to {localTargetUrl}...");
+                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                var response = await _httpClient.PostAsync(localTargetUrl, content);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    Print($"[Agent HTTP Error] {response.StatusCode} from {localTargetUrl}");
+                    HandleAiFailure($"HTTP {(int)response.StatusCode} from {localTargetUrl}");
+                    return;
+                }
+
+                var resultJson = await response.Content.ReadAsStringAsync();
+                var jsonOptions = new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true,
+                    NumberHandling = JsonNumberHandling.AllowReadingFromString
+                };
+                var decision = JsonSerializer.Deserialize<AgentDecision>(resultJson, jsonOptions);
+
+                if (decision != null)
+                {
+                    _consecutiveAiFailures = 0;
+                    BeginInvokeOnMainThread(() => ExecuteDecision(decision, expectedRequestId));
+                }
+                else
+                {
+                    HandleAiFailure("Failed to deserialize AgentDecision from local server");
+                }
+            }
+            catch (Exception ex)
+            {
+                HandleAiFailure($"Communication failed to {ApiUrl}: {ex.Message}");
+            }
+        }
+
+        private async Task ReportPositionOpen(Position position, double slPips, double tpPips, string reason = "")
+        {
+            try
+            {
+                if (_httpClient == null) return;
+                var baseUri = (AiMode == AiConnectionMode.Direct_OpenRouter_DashScope && !string.IsNullOrWhiteSpace(DashboardServerUrl))
+                    ? DashboardServerUrl.TrimEnd('/')
+                    : ApiUrl.Replace("/trade", "");
+                var reportUrl = $"{baseUri}/portfolio/report";
+
+                var report = new
+                {
+                    ctrader_id = position.Id,
+                    bot_id = BotId,
+                    action = "open",
+                    symbol = position.SymbolName,
+                    side = position.TradeType.ToString(),
+                    volume = position.VolumeInUnits / Symbol.LotSize,
+                    entry_price = position.EntryPrice,
+                    sl_price = position.StopLoss,
+                    tp_price = position.TakeProfit,
+                    sl_pips = slPips,
+                    tp_pips = tpPips,
+                    reason = reason,
+                    account_number = Account.Number.ToString(),
+                    account_type = Account.IsLive ? "live" : "demo",
+                    account_label = string.IsNullOrWhiteSpace(AccountLabel) ? Account.BrokerName : $"{Account.BrokerName} ({AccountLabel.Trim()})",
+                    account_balance = Account.Balance,
+                    account_equity = Account.Equity
+                };
+
+                var json = JsonSerializer.Serialize(report);
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                await _httpClient.PostAsync(reportUrl, content);
+            }
+            catch (Exception ex)
+            {
+                Print($"[Agent Portfolio] Failed to report position open: {ex.Message}");
+            }
+        }
+
+        private async Task ReportPositionClosed(Position position, double pnl, string reason = "", double? exitPrice = null, double? pips = null)
+        {
+            try
+            {
+                if (_httpClient == null) return;
+                var baseUri = (AiMode == AiConnectionMode.Direct_OpenRouter_DashScope && !string.IsNullOrWhiteSpace(DashboardServerUrl))
+                    ? DashboardServerUrl.TrimEnd('/')
+                    : ApiUrl.Replace("/trade", "");
+                var reportUrl = $"{baseUri}/portfolio/report";
+
+                double resolvedExitPrice = exitPrice ?? (position.TradeType == TradeType.Buy ? Symbol.Bid : Symbol.Ask);
+                double resolvedPips = pips ?? position.Pips;
+
+                var report = new
+                {
+                    ctrader_id = position.Id,
+                    bot_id = BotId,
+                    action = "close",
+                    symbol = position.SymbolName,
+                    side = position.TradeType.ToString(),
+                    volume = position.VolumeInUnits / Symbol.LotSize,
+                    entry_price = position.EntryPrice,
+                    exit_price = resolvedExitPrice,
+                    pnl = pnl,
+                    pips = resolvedPips,
+                    reason = string.IsNullOrWhiteSpace(reason) ? "Closed" : reason,
+                    account_number = Account.Number.ToString(),
+                    account_type = Account.IsLive ? "live" : "demo",
+                    account_label = string.IsNullOrWhiteSpace(AccountLabel) ? Account.BrokerName : $"{Account.BrokerName} ({AccountLabel.Trim()})",
+                    account_balance = Account.Balance,
+                    account_equity = Account.Equity
+                };
+
+                var json = JsonSerializer.Serialize(report);
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                await _httpClient.PostAsync(reportUrl, content);
+            }
+            catch (Exception ex)
+            {
+                Print($"[Agent Portfolio] Failed to report position closed: {ex.Message}");
+            }
+        }
+
+        private DateTime _lastTickTelemetryTime = DateTime.MinValue;
+
+        private void SendLiveTickTelemetry(bool force = false)
+        {
+            if (RunningMode != RunningMode.RealTime) return;
+            if (_httpClient == null) return;
+            if (!force) return; // Periodic tick disabled to eliminate CPU overhead; only send on order events
+
+            try
+            {
+                // Synchronously capture all cTrader COM/API objects on the Main Thread
+                var posList = new List<object>();
+                foreach (var p in Positions)
+                {
+                    posList.Add(new
+                    {
+                        id = p.Id,
+                        side = p.TradeType.ToString(),
+                        volume = p.VolumeInUnits / Symbol.LotSize,
+                        entry_price = p.EntryPrice,
+                        net_profit = p.NetProfit,
+                        pips = p.Pips
+                    });
+                }
+
+                var telemetry = new
+                {
+                    bot_id = BotId,
+                    account_number = Account.Number.ToString(),
+                    symbol = SymbolName,
+                    bid = Symbol.Bid,
+                    ask = Symbol.Ask,
+                    equity = Account.Equity,
+                    balance = Account.Balance,
+                    positions = posList
+                };
+
+                var baseUri = (AiMode == AiConnectionMode.Direct_OpenRouter_DashScope && !string.IsNullOrWhiteSpace(DashboardServerUrl))
+                    ? DashboardServerUrl.TrimEnd('/')
+                    : (ApiUrl.Contains("/trade") ? ApiUrl.Replace("/trade", "") : "http://127.0.0.1:8181");
+                var tickUrl = $"{baseUri}/api/tick";
+
+                var json = JsonSerializer.Serialize(telemetry);
+
+                // Run only the HTTP network request in the background task
+                Task.Run(async () =>
+                {
+                    try
+                    {
+                        var content = new StringContent(json, Encoding.UTF8, "application/json");
+                        await _httpClient.PostAsync(tickUrl, content);
+                    }
+                    catch { }
+                });
+            }
+            catch (Exception ex)
+            {
+                Print($"[Tick Telemetry Error] {ex.Message}");
+            }
+        }
+
+        private void ExecuteDecision(AgentDecision decision, string expectedRequestId = "")
+        {
+            try
+            {
+                if (decision == null) return;
+
+                // 1. Robust Cross-Ticker & Cross-Instance Verification
+                if (!string.IsNullOrEmpty(decision.symbol))
+                {
+                    bool symMatch = string.Equals(decision.symbol, SymbolName, StringComparison.OrdinalIgnoreCase) ||
+                                   SymbolName.StartsWith(decision.symbol, StringComparison.OrdinalIgnoreCase) ||
+                                   decision.symbol.StartsWith(SymbolName, StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(decision.symbol.Replace("/", ""), SymbolName.Replace("/", ""), StringComparison.OrdinalIgnoreCase);
+                    if (!symMatch)
+                    {
+                        Print($"[Security Alert] Symbol mismatch! Expected '{SymbolName}', but received '{decision.symbol}'. Action DISCARDED!");
+                        return;
+                    }
+                }
+
+                // 2. Strict Correlation Request ID Verification
+                if (!string.IsNullOrEmpty(expectedRequestId) && !string.IsNullOrEmpty(decision.request_id) && !string.Equals(decision.request_id, expectedRequestId, StringComparison.OrdinalIgnoreCase))
+                {
+                    Print($"[Security Alert] RequestID mismatch! Expected '{expectedRequestId}', but received '{decision.request_id}'. Action DISCARDED!");
+                    return;
+                }
+
+                // 3. Robust Timeframe Verification
+                if (!string.IsNullOrEmpty(decision.timeframe))
+                {
+                    bool tfMatch = string.Equals(decision.timeframe, TimeFrame.Name, StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(decision.timeframe, TimeFrame.ToString(), StringComparison.OrdinalIgnoreCase) ||
+                                   decision.timeframe.Replace(" ", "").Equals(TimeFrame.Name.Replace(" ", ""), StringComparison.OrdinalIgnoreCase);
+                    if (!tfMatch)
+                    {
+                        Print($"[Security Alert] Timeframe mismatch! Expected '{TimeFrame.Name}', but received '{decision.timeframe}'. Action DISCARDED!");
+                        return;
+                    }
+                }
+
+                // 4. Robust Bot ID Verification
+                if (!string.IsNullOrEmpty(decision.bot_id) && !string.IsNullOrEmpty(BotId) && !string.Equals(decision.bot_id, BotId, StringComparison.OrdinalIgnoreCase))
+                {
+                    Print($"[Security Alert] BotID mismatch! Expected '{BotId}', but received '{decision.bot_id}'. Action DISCARDED!");
+                    return;
+                }
+
+                string action = (decision.action ?? "").Trim().ToUpperInvariant();
+                Print($"[AI Decision] Action: {action} | Symbol: {SymbolName} | Confidence: {decision.confidence:F1}% | Reason: {decision.reason}");
+
+                if (action == "CLOSE_ALL")
+                {
+                    Print($"[AI Agent Action] Executing CLOSE_ALL on all positions. Reason: {decision.reason}");
+                    CloseAllPositions();
+                    _ = SendTelegramAlertAsync($"🚨 <b>[AI Agent] CLOSE_ALL Executed</b>\nReason: {decision.reason}\nConfidence: {decision.confidence:F1}%");
+                    return;
+                }
+
+                if (action == "ADJUST")
+                {
+                    var openPos = Positions.FindAll(label, SymbolName);
+                    if (openPos.Length > 0)
+                    {
+                        foreach (var pos in openPos)
+                        {
+                            double? targetSL = null;
+                            if (decision.new_sl_price > 0)
+                            {
+                                targetSL = Math.Round(decision.new_sl_price, Symbol.Digits);
+                            }
+                            else if (decision.sl_pips > 0)
+                            {
+                                double slPrice = pos.TradeType == TradeType.Buy 
+                                    ? Symbol.Bid - decision.sl_pips * Symbol.PipSize 
+                                    : Symbol.Ask + decision.sl_pips * Symbol.PipSize;
+                                targetSL = Math.Round(slPrice, Symbol.Digits);
+                            }
+
+                            double? targetTP = null;
+                            if (decision.new_tp_price > 0)
+                            {
+                                targetTP = Math.Round(decision.new_tp_price, Symbol.Digits);
+                            }
+                            else if (decision.tp_pips > 0)
+                            {
+                                double tpPrice = pos.TradeType == TradeType.Buy 
+                                    ? Symbol.Ask + decision.tp_pips * Symbol.PipSize 
+                                    : Symbol.Bid - decision.tp_pips * Symbol.PipSize;
+                                targetTP = Math.Round(tpPrice, Symbol.Digits);
+                            }
+
+                            // Strict One-Way Profit Ratchet: Only accept AI proposed SL if it improves/protects profit more than current SL
+                            bool slFavorable = false;
+                            if (targetSL.HasValue)
+                            {
+                                if (pos.TradeType == TradeType.Buy)
+                                {
+                                    double benchmarkSl = pos.StopLoss ?? pos.EntryPrice;
+                                    if (targetSL.Value > benchmarkSl)
+                                    {
+                                        slFavorable = true;
+                                    }
+                                    else
+                                    {
+                                        Print($"[AI ADJUST Discarded SL] Proposed SL ({targetSL.Value:F2}) is <= current SL ({pos.StopLoss:F2}) on BUY #{pos.Id}. Retaining existing SL and continuing TrailingStop.");
+                                        targetSL = pos.StopLoss;
+                                    }
+                                }
+                                else if (pos.TradeType == TradeType.Sell)
+                                {
+                                    double benchmarkSl = pos.StopLoss ?? pos.EntryPrice;
+                                    if (targetSL.Value < benchmarkSl)
+                                    {
+                                        slFavorable = true;
+                                    }
+                                    else
+                                    {
+                                        Print($"[AI ADJUST Discarded SL] Proposed SL ({targetSL.Value:F2}) is >= current SL ({pos.StopLoss:F2}) on SELL #{pos.Id}. Retaining existing SL and continuing TrailingStop.");
+                                        targetSL = pos.StopLoss;
+                                    }
+                                }
+                            }
+
+                            // ── Evaluate if AI proposed SL has reduced initial risk by >= threshold (or passed Entry) ──
+                            bool triggerAiTrailing = false;
+                            if (enableAiAdjustTrailing && targetSL.HasValue)
+                            {
+                                double initialDist = _initialSlDistances.ContainsKey(pos.Id) 
+                                    ? _initialSlDistances[pos.Id] 
+                                    : (pos.StopLoss.HasValue ? Math.Abs(pos.EntryPrice - pos.StopLoss.Value) : (stoplossPip * Symbol.PipSize));
+
+                                if (initialDist <= 0) initialDist = (stoplossPip > 0 ? stoplossPip : 100) * Symbol.PipSize;
+
+                                bool pastEntry = (pos.TradeType == TradeType.Buy && targetSL.Value >= pos.EntryPrice) ||
+                                                 (pos.TradeType == TradeType.Sell && targetSL.Value <= pos.EntryPrice);
+
+                                if (pastEntry)
+                                {
+                                    triggerAiTrailing = true;
+                                }
+                                else
+                                {
+                                    double remainingDist = Math.Abs(pos.EntryPrice - targetSL.Value);
+                                    double riskReductionRatio = 1.0 - (remainingDist / initialDist);
+                                    if (riskReductionRatio >= (aiAdjustTrailingThresholdPercent / 100.0))
+                                    {
+                                        triggerAiTrailing = true;
+                                    }
+                                }
+                            }
+
+                            // Keep native trailing stop active if already running OR triggered now by AI Adjust
+                            bool keepTrailing = pos.HasTrailingStop || triggerAiTrailing || 
+                                               (enableTrailingStop || (enableTrailingStopFromBreakEven && _movedToBreakEven.ContainsKey(pos.Id) && _movedToBreakEven[pos.Id]));
+
+                            if (triggerAiTrailing && !pos.HasTrailingStop)
+                            {
+                                Print($"[AI ADJUST Trailing Activated] Position #{pos.Id} ({pos.TradeType}) SL moved close to Entry ({targetSL.Value:F5}). Risk reduced >= {aiAdjustTrailingThresholdPercent:F0}%. Enabling cTrader Native Trailing Stop.");
+                            }
+
+                            Print($"[AI Agent ADJUST] Modifying #{pos.Id} ({pos.TradeType}) -> Proposed SL: {targetSL:F2} (Favorable: {slFavorable}), TP: {targetTP:F2} vs Current SL: {pos.StopLoss:F2}, TP: {pos.TakeProfit:F2} (Bid: {Symbol.Bid:F2}, Ask: {Symbol.Ask:F2}, HasTS: {keepTrailing})");
+                            SafeModifyPosition(pos, targetSL, targetTP, hasTrailingStop: keepTrailing, source: "AI Agent ADJUST");
+                        }
+                        string slStr = decision.new_sl_price > 0 ? $"{decision.new_sl_price:F2} ({decision.sl_pips:F0} pips)" : $"{decision.sl_pips:F0} pips";
+                        string tpStr = decision.new_tp_price > 0 ? $"{decision.new_tp_price:F2} ({decision.tp_pips:F0} pips)" : $"{decision.tp_pips:F0} pips";
+                        if (sendAiAdjustAlerts)
+                        {
+                            _ = SendTelegramAlertAsync($"⚙️ <b>[AI Agent] ADJUST Evaluated</b>\n• Target SL: <b>{slStr}</b> | TP: <b>{tpStr}</b>\n• Positions: {openPos.Length}\n• Reason: <i>{decision.reason}</i>");
+                        }
+                    }
+                    return;
+                }
+
+                if (action == "HOLD")
+                {
+                    Print($"[AI Agent HOLD] Market in equilibrium or position healthy. Reason: {decision.reason}");
+                    return;
+                }
+
+                if (action != "BUY" && action != "SELL") return;
+
+                // ── Session Guard: Strict Golden Killzone enforcement for new entries ──
+                if (!IsGoldenKillzone(Server.Time, out string currentKz))
+                {
+                    Print($"[Session Guard Block] Action {action} rejected! Current time {Server.Time:HH:mm:ss} UTC is outside Golden Killzones ({currentKz}). New entries strictly prohibited.");
+                    return;
+                }
+
+                // ── News Filter Guard: Strict High Impact news blackout enforcement ──
+                if (IsNewsBlackoutActive(out string newsBlockReason, out _))
+                {
+                    Print($"[News Filter Guard Block] Action {action} rejected! Active blackout: {newsBlockReason}");
+                    if (enableTelegramAlerts)
+                    {
+                        _ = SendTelegramAlertAsync($"📰 <b>[News Filter Guard]</b>\nAI <b>{action}</b> rejected: <i>{newsBlockReason}</i>");
+                    }
+                    return;
+                }
+
+                if (Positions.FindAll(label, SymbolName).Length >= maxPermittedOrder)
+                {
+                    Print($"[AI Agent Notice] Action {action} received, but max permitted orders ({maxPermittedOrder}) reached.");
+                    return;
+                }
+
+                var tradeType = action == "BUY" ? TradeType.Buy : TradeType.Sell;
+
+                // Calculate SL/TP in Pips from exact structural price if available
+                double slPips = 0;
+                if (decision.new_sl_price > 0)
+                {
+                    slPips = tradeType == TradeType.Buy 
+                        ? Math.Max(0, Math.Round((Symbol.Ask - decision.new_sl_price) / Symbol.PipSize, 1))
+                        : Math.Max(0, Math.Round((decision.new_sl_price - Symbol.Bid) / Symbol.PipSize, 1));
+                }
+                if (slPips <= 0) slPips = decision.sl_pips;
+                if (slPips <= 0) slPips = stoplossPip;
+
+                double tpPips = 0;
+                if (decision.new_tp_price > 0)
+                {
+                    tpPips = tradeType == TradeType.Buy 
+                        ? Math.Max(0, Math.Round((decision.new_tp_price - Symbol.Ask) / Symbol.PipSize, 1))
+                        : Math.Max(0, Math.Round((Symbol.Bid - decision.new_tp_price) / Symbol.PipSize, 1));
+                }
+                if (tpPips <= 0) tpPips = decision.tp_pips;
+                if (tpPips <= 0) tpPips = takeprofitPip;
+
+                // ── Safety Guard: Dynamic Spread & ATR Minimum SL Floor (Anti-Stop-Hunt) ─────────
+                double spreadPips = Symbol.PipSize > 0 ? Math.Round((Symbol.Ask - Symbol.Bid) / Symbol.PipSize, 1) : 0;
+                double spreadMinFloor = spreadPips > 0 ? (spreadPips * AiSlSpreadMultiplier) : 10.0;
+                double currentAtrPips = (atr != null && atr.Result.Count > 0 && Symbol.PipSize > 0) 
+                    ? Math.Round(atr.Result.LastValue / Symbol.PipSize, 0) 
+                    : 0;
+                double dynamicFloor = currentAtrPips > 0 ? Math.Max(spreadMinFloor, Math.Round(currentAtrPips * 0.8, 0)) : spreadMinFloor;
+                double effectiveMinFloor = AiSlMinFloorPips > 0 ? Math.Max(AiSlMinFloorPips, dynamicFloor) : dynamicFloor;
+
+                if (slPips > 0 && slPips < effectiveMinFloor)
+                {
+                    Print($"[AI Safety Guard] AI suggested SL={slPips:F1} pips is too tight (< Dynamic Floor {effectiveMinFloor:F1} pips: {AiSlSpreadMultiplier:F0}x Spread / 0.8x ATR). Clamped to {effectiveMinFloor:F1} pips to prevent stop hunting.");
+                    slPips = effectiveMinFloor;
+                }
+
+                // ── Volume Authority: Always use internal risk management (ignore AI volume_lots) ─
+                // Calculate volume dynamically based on actual AI slPips and account equity risk
+                double volume;
+                if (enableFixedVol)
+                {
+                    volume = Symbol.NormalizeVolumeInUnits(_fixedVolLots * Symbol.LotSize);
+                }
+                else
+                {
+                    double effectiveRisk = GetEffectiveRiskFactor();
+                    double riskAmount = Account.Equity * (effectiveRisk / 100.0);
+                    double effectiveSlPips = slPips > 0 ? slPips : (stoplossPip > 0 ? stoplossPip : effectiveMinFloor);
+                    if (effectiveSlPips <= 0) effectiveSlPips = Math.Max(effectiveMinFloor, 10.0);
+                    double lossPerUnit = effectiveSlPips * Symbol.PipValue;
+                    if (lossPerUnit <= 0) lossPerUnit = Symbol.PipValue * 100.0;
+                    double targetUnits = riskAmount / lossPerUnit;
+                    volume = Symbol.NormalizeVolumeInUnits(targetUnits);
+                    Print($"[AI Risk Sizing] Equity=${Account.Equity:F2} | Risk={effectiveRisk:F1}% (${riskAmount:F2}) | AI SL={effectiveSlPips:F1} pips (Floor: {effectiveMinFloor:F1} pips) | PipVal=${Symbol.PipValue:F4} | Loss/Unit=${lossPerUnit:F2} | TargetUnits={targetUnits:F2} => Order Vol: {volume / Symbol.LotSize:F2} Lots ({volume} units)");
+                }
+
+                double maxUnits = maxVol * Symbol.LotSize;
+                if (volume > maxUnits) volume = maxUnits;
+                if (volume < Symbol.VolumeInUnitsMin) volume = Symbol.VolumeInUnitsMin;
+                if (volume > Symbol.VolumeInUnitsMax) volume = Symbol.VolumeInUnitsMax;
+
+                // ── Anti-FOMO & Candle Wick Retracement Evaluation ──────────────────
+                double candleOpenPrice = Bars.LastBar.Open;
+                double effectiveSlippagePrice;
+                double effectivePullbackBufferPrice;
+                double currentAtr = (atr != null && atr.Result.Count > 0) ? atr.Result.LastValue : 0;
+
+                if (antiFomoToleranceMode == AntiFomoToleranceMode.Dynamic_ATR_Percent && currentAtr > 0)
+                {
+                    effectiveSlippagePrice = currentAtr * (slippageToleranceAtrPercent / 100.0);
+                    effectivePullbackBufferPrice = currentAtr * (pullbackBufferAtrPercent / 100.0);
+                }
+                else
+                {
+                    effectiveSlippagePrice = slippageTolerancePips * Symbol.PipSize;
+                    effectivePullbackBufferPrice = pullbackBufferPips * Symbol.PipSize;
+                }
+
+                // Safety Floor: Ensure tolerance is never below 1.5x Spread to prevent broker spread noise triggers
+                double minSpreadBuffer = Symbol.Spread * 1.5;
+                if (effectiveSlippagePrice < minSpreadBuffer)
+                    effectiveSlippagePrice = minSpreadBuffer;
+
+                bool isFarFromOpen = false;
+
+                if (enableWickRetracementHunting)
+                {
+                    if (tradeType == TradeType.Buy)
+                    {
+                        isFarFromOpen = Symbol.Ask > (candleOpenPrice + effectiveSlippagePrice);
+                    }
+                    else if (tradeType == TradeType.Sell)
+                    {
+                        isFarFromOpen = Symbol.Bid < (candleOpenPrice - effectiveSlippagePrice);
+                    }
+                }
+
+                if (enableWickRetracementHunting && isFarFromOpen)
+                {
+                    // Arm the staged order and wait for pullback
+                    _stagedState = tradeType == TradeType.Buy ? StagedActionState.Armed_Buy : StagedActionState.Armed_Sell;
+                    _stagedDecision = decision;
+                    _stagedBarOpenTime = Bars.LastBar.OpenTime;
+                    _stagedExpiryTime = Server.Time.AddMinutes(maxStagingWaitMinutes);
+                    _stagedVolumeUnits = volume;
+                    _stagedSlPips = slPips;
+                    _stagedTpPips = tpPips;
+
+                    double tolPips = Symbol.PipSize > 0 ? (effectiveSlippagePrice / Symbol.PipSize) : 0;
+                    string modeInfo = antiFomoToleranceMode == AntiFomoToleranceMode.Dynamic_ATR_Percent
+                        ? $"{slippageToleranceAtrPercent:F1}% ATR ({tolPips:F1} pips)"
+                        : $"{tolPips:F1} pips (Fixed)";
+
+                    if (tradeType == TradeType.Buy)
+                    {
+                        _stagedTargetPullbackPrice = candleOpenPrice + effectivePullbackBufferPrice;
+                        double distancePips = Symbol.PipSize > 0 ? ((Symbol.Ask - candleOpenPrice) / Symbol.PipSize) : 0;
+                        Print($"[Anti-FOMO Staging] AI BUY received after delay. Market Ask ({Symbol.Ask:F2}) is +{distancePips:F1} pips above Open ({candleOpenPrice:F2}) > Tol: {modeInfo}. Staging order: waiting for pullback <= {_stagedTargetPullbackPrice:F2} (Max wait: {maxStagingWaitMinutes}m)...");
+                        if (sendAntiFomoStagedAlerts)
+                        {
+                            _ = SendTelegramAlertAsync($"⏳ <b>[Anti-FOMO Staged] AI BUY Armed</b>\n• Symbol: {SymbolName}\n• Current Ask: {Symbol.Ask:F2} (+{distancePips:F1} pips from Open)\n• Tolerance: {modeInfo}\n• Waiting Pullback to: <b>{_stagedTargetPullbackPrice:F2}</b>\n• Max Timeout: {maxStagingWaitMinutes}m\n• Chasing top prevented!");
+                        }
+                    }
+                    else
+                    {
+                        _stagedTargetPullbackPrice = candleOpenPrice - effectivePullbackBufferPrice;
+                        double distancePips = Symbol.PipSize > 0 ? ((candleOpenPrice - Symbol.Bid) / Symbol.PipSize) : 0;
+                        Print($"[Anti-FOMO Staging] AI SELL received after delay. Market Bid ({Symbol.Bid:F2}) is -{distancePips:F1} pips below Open ({candleOpenPrice:F2}) > Tol: {modeInfo}. Staging order: waiting for pullback >= {_stagedTargetPullbackPrice:F2} (Max wait: {maxStagingWaitMinutes}m)...");
+                        if (sendAntiFomoStagedAlerts)
+                        {
+                            _ = SendTelegramAlertAsync($"⏳ <b>[Anti-FOMO Staged] AI SELL Armed</b>\n• Symbol: {SymbolName}\n• Current Bid: {Symbol.Bid:F2} (-{distancePips:F1} pips from Open)\n• Tolerance: {modeInfo}\n• Waiting Pullback to: <b>{_stagedTargetPullbackPrice:F2}</b>\n• Max Timeout: {maxStagingWaitMinutes}m\n• Chasing bottom prevented!");
+                        }
+                    }
+                    return;
+                }
+
+                _lastAgentReason = decision.reason;
+                var result = ExecuteMarketOrder(tradeType, SymbolName, volume, label, slPips > 0 ? slPips : (double?)null, tpPips > 0 ? tpPips : (double?)null);
+                if (result.IsSuccessful)
+                {
+                    Print($"[AI Agent SUCCESS] Market order {tradeType} {volume / Symbol.LotSize:F2} lots placed successfully @ {result.Position.EntryPrice}! SL: {slPips} pips, TP: {tpPips} pips.");
+                    if (_httpClient == null && !string.IsNullOrWhiteSpace(telegramBotToken))
+                    {
+                        _ = SendTelegramAlertAsync($"🚀 <b>[Trading Agent Hub] Position Opened</b>\n• Tài khoản: <code>{Account.Number}</code>\n• Bot: <code>{label}</code>\n• Symbol: <b>{SymbolName}</b> ({(tradeType == TradeType.Buy ? "🟢 BUY" : "🔴 SELL")})\n• Khối lượng: <b>{volume / Symbol.LotSize:F2} lots</b> @ Entry: <code>{result.Position.EntryPrice}</code>\n• Stop Loss: <b>{result.Position.StopLoss:F2} ({slPips:F0} pips)</b> | Take Profit: <b>{result.Position.TakeProfit:F2} ({tpPips:F0} pips)</b>\n• Lý do: <i>{decision.reason}</i>");
+                    }
+                }
+                else
+                {
+                    Print($"[AI Agent Order FAILED] Error: {result.Error}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Print($"[AI Decision Execution Error] {ex.Message}");
+            }
+        }
+
+        #region Anti-FOMO Staged Order Execution Engine
+        private void ProcessStagedOrderExecution()
+        {
+            if (_stagedState == StagedActionState.None || _stagedDecision == null) return;
+
+            // 0. Session Guard: Exited Golden Killzone
+            if (!IsGoldenKillzone(Server.Time, out string currentKz))
+            {
+                Print($"[Staged Order Guard] Staged {_stagedState} cancelled because market moved outside Golden Killzones ({currentKz}).");
+                if (sendAntiFomoStagedAlerts)
+                {
+                    _ = SendTelegramAlertAsync($"⏳ <b>[Anti-FOMO Cancelled]</b>\nStaged <b>{_stagedState}</b> cancelled: market moved outside Golden Killzones ({currentKz}).");
+                }
+                ResetStagedOrder();
+                return;
+            }
+
+            // 0.1 News Filter Guard: Entered News Blackout
+            if (IsNewsBlackoutActive(out string newsBlockReason, out _))
+            {
+                Print($"[Staged Order Guard] Staged {_stagedState} cancelled due to active news blackout: {newsBlockReason}");
+                if (sendAntiFomoStagedAlerts)
+                {
+                    _ = SendTelegramAlertAsync($"📰 <b>[Anti-FOMO Cancelled]</b>\nStaged <b>{_stagedState}</b> cancelled: active news blackout ({newsBlockReason}).");
+                }
+                ResetStagedOrder();
+                return;
+            }
+
+            // 1. Invalidation: Current Bar has closed (prevent trading on next bar with stale intent)
+            if (Bars.LastBar.OpenTime != _stagedBarOpenTime)
+            {
+                Print($"[Anti-FOMO Invalidation] Bar closed without pullback. Staged {_stagedState} cancelled. OpenTime: {_stagedBarOpenTime} -> Current: {Bars.LastBar.OpenTime}");
+                if (sendAntiFomoStagedAlerts)
+                {
+                    _ = SendTelegramAlertAsync($"⏳ <b>[Anti-FOMO Expired]</b>\nStaged <b>{_stagedState}</b> cancelled: current candle closed without reaching pullback zone.");
+                }
+                ResetStagedOrder();
+                return;
+            }
+
+            // 2. Invalidation: Timeout exceeded
+            if (Server.Time >= _stagedExpiryTime)
+            {
+                Print($"[Anti-FOMO Invalidation] Staged {_stagedState} expired after {maxStagingWaitMinutes} minutes without pullback.");
+                if (sendAntiFomoStagedAlerts)
+                {
+                    _ = SendTelegramAlertAsync($"⏳ <b>[Anti-FOMO Expired]</b>\nStaged <b>{_stagedState}</b> timed out ({maxStagingWaitMinutes}m). Pullback did not materialize.");
+                }
+                ResetStagedOrder();
+                return;
+            }
+
+            // 3. Invalidation: Market already moved too far towards TP (>= cancelIfTpReachedPercent)
+            if (_stagedDecision.new_tp_price > 0)
+            {
+                if (_stagedState == StagedActionState.Armed_Buy)
+                {
+                    double totalTpDistance = _stagedDecision.new_tp_price - Bars.LastBar.Open;
+                    if (totalTpDistance > 0)
+                    {
+                        double currentProgress = (Symbol.Bid - Bars.LastBar.Open) / totalTpDistance;
+                        if (currentProgress >= (cancelIfTpReachedPercent / 100.0))
+                        {
+                            Print($"[Anti-FOMO Invalidation] Price already reached {currentProgress:P0} of TP distance to {_stagedDecision.new_tp_price:F2}. Cancelling Staged BUY to avoid chasing top.");
+                            if (sendAntiFomoStagedAlerts)
+                            {
+                                _ = SendTelegramAlertAsync($"⛔ <b>[Anti-FOMO Cancelled]</b>\nStaged BUY cancelled: Price already traversed {currentProgress:P0} of TP distance. Chasing prevented.");
+                            }
+                            ResetStagedOrder();
+                            return;
+                        }
+                    }
+                }
+                else if (_stagedState == StagedActionState.Armed_Sell)
+                {
+                    double totalTpDistance = Bars.LastBar.Open - _stagedDecision.new_tp_price;
+                    if (totalTpDistance > 0)
+                    {
+                        double currentProgress = (Bars.LastBar.Open - Symbol.Ask) / totalTpDistance;
+                        if (currentProgress >= (cancelIfTpReachedPercent / 100.0))
+                        {
+                            Print($"[Anti-FOMO Invalidation] Price already reached {currentProgress:P0} of TP distance to {_stagedDecision.new_tp_price:F2}. Cancelling Staged SELL to avoid chasing bottom.");
+                            if (sendAntiFomoStagedAlerts)
+                            {
+                                _ = SendTelegramAlertAsync($"⛔ <b>[Anti-FOMO Cancelled]</b>\nStaged SELL cancelled: Price already traversed {currentProgress:P0} of TP distance. Chasing prevented.");
+                            }
+                            ResetStagedOrder();
+                            return;
+                        }
+                    }
+                }
+            }
+
+            // 4. Invalidation: Price breached proposed Stop Loss in reverse (invalidated technical structure)
+            if (_stagedDecision.new_sl_price > 0)
+            {
+                if (_stagedState == StagedActionState.Armed_Buy && Symbol.Bid <= _stagedDecision.new_sl_price)
+                {
+                    Print($"[Anti-FOMO Invalidation] Price breached proposed SL {_stagedDecision.new_sl_price:F2} during pullback on BUY. Structure invalid, cancelling order.");
+                    ResetStagedOrder();
+                    return;
+                }
+                else if (_stagedState == StagedActionState.Armed_Sell && Symbol.Ask >= _stagedDecision.new_sl_price)
+                {
+                    Print($"[Anti-FOMO Invalidation] Price breached proposed SL {_stagedDecision.new_sl_price:F2} during pullback on SELL. Structure invalid, cancelling order.");
+                    ResetStagedOrder();
+                    return;
+                }
+            }
+
+            // 5. Trigger Execution: Check if price has pulled back to or below target discount price
+            if (_stagedState == StagedActionState.Armed_Buy)
+            {
+                if (Symbol.Ask <= _stagedTargetPullbackPrice)
+                {
+                    Print($"[Anti-FOMO Pullback Triggered] BUY target pullback reached! Ask: {Symbol.Ask:F2} <= Target: {_stagedTargetPullbackPrice:F2} (Open: {Bars.LastBar.Open:F2}). Executing Sniper BUY!");
+                    ExecuteStagedMarketOrder(TradeType.Buy);
+                }
+            }
+            else if (_stagedState == StagedActionState.Armed_Sell)
+            {
+                if (Symbol.Bid >= _stagedTargetPullbackPrice)
+                {
+                    Print($"[Anti-FOMO Pullback Triggered] SELL target pullback reached! Bid: {Symbol.Bid:F2} >= Target: {_stagedTargetPullbackPrice:F2} (Open: {Bars.LastBar.Open:F2}). Executing Sniper SELL!");
+                    ExecuteStagedMarketOrder(TradeType.Sell);
+                }
+            }
+        }
+
+        private void ExecuteStagedMarketOrder(TradeType tradeType)
+        {
+            if (Positions.FindAll(label, SymbolName).Length >= maxPermittedOrder)
+            {
+                Print($"[Anti-FOMO Notice] Max permitted orders ({maxPermittedOrder}) reached. Staged order aborted.");
+                ResetStagedOrder();
+                return;
+            }
+
+            double volume = _stagedVolumeUnits;
+            double slPips = _stagedSlPips;
+            double tpPips = _stagedTpPips;
+            var decision = _stagedDecision;
+
+            // Recalculate SL/TP pips relative to actual executed entry price if exact structural prices were provided
+            if (decision.new_sl_price > 0)
+            {
+                slPips = tradeType == TradeType.Buy 
+                    ? Math.Max(0, Math.Round((Symbol.Ask - decision.new_sl_price) / Symbol.PipSize, 1))
+                    : Math.Max(0, Math.Round((decision.new_sl_price - Symbol.Bid) / Symbol.PipSize, 1));
+            }
+            if (decision.new_tp_price > 0)
+            {
+                tpPips = tradeType == TradeType.Buy 
+                    ? Math.Max(0, Math.Round((decision.new_tp_price - Symbol.Ask) / Symbol.PipSize, 1))
+                    : Math.Max(0, Math.Round((Symbol.Bid - decision.new_tp_price) / Symbol.PipSize, 1));
+            }
+
+            _lastAgentReason = decision.reason;
+            var result = ExecuteMarketOrder(tradeType, SymbolName, volume, label, slPips > 0 ? slPips : (double?)null, tpPips > 0 ? tpPips : (double?)null);
+            if (result.IsSuccessful)
+            {
+                Print($"[Anti-FOMO Sniper SUCCESS] Market order {tradeType} {volume / Symbol.LotSize:F2} lots placed @ {result.Position.EntryPrice}! SL: {slPips} pips, TP: {tpPips} pips. Sniped at candle pullback!");
+                if (_httpClient == null && !string.IsNullOrWhiteSpace(telegramBotToken))
+                {
+                    _ = SendTelegramAlertAsync($"🚀 <b>[Trading Agent Hub] Position Opened</b>\n• Tài khoản: <code>{Account.Number}</code>\n• Bot: <code>{label}</code>\n• Symbol: <b>{SymbolName}</b> ({(tradeType == TradeType.Buy ? "🟢 BUY" : "🔴 SELL")})\n• Khối lượng: <b>{volume / Symbol.LotSize:F2} lots</b> @ Entry: <code>{result.Position.EntryPrice}</code>\n• Stop Loss: <b>{result.Position.StopLoss:F2} ({slPips:F0} pips)</b> | Take Profit: <b>{result.Position.TakeProfit:F2} ({tpPips:F0} pips)</b>\n• Lý do: <i>Anti-FOMO Sniper Retracement ({decision.reason})</i>");
+                }
+            }
+            else
+            {
+                Print($"[Anti-FOMO Order FAILED] Error: {result.Error}");
+            }
+
+            ResetStagedOrder();
+        }
+
+        private void ResetStagedOrder()
+        {
+            _stagedState = StagedActionState.None;
+            _stagedDecision = null;
+            _stagedBarOpenTime = DateTime.MinValue;
+            _stagedExpiryTime = DateTime.MinValue;
+            _stagedTargetPullbackPrice = 0.0;
+            _stagedVolumeUnits = 0.0;
+            _stagedSlPips = 0.0;
+            _stagedTpPips = 0.0;
+        }
+        #endregion
+        #endregion
+    }
+}
+

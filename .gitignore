@@ -1,0 +1,63 @@
+## Visual Studio / C# / .NET
+.vs/
+*.user
+*.userosscache
+*.sln.docstates
+*.suo
+*.userprefs
+*.db
+*.db-shm
+*.db-wal
+
+## Build Artifacts & Binary Libraries
+*.cache
+*.vsidx
+bin/
+obj/
+**/bin/
+**/obj/
+
+
+## Temporary & Backup Files
+* - Copy*.algo
+* - Copy (2).algo
+*.tmp
+*.log
+__pycache__/
+
+## Credentials & Private Keys
+.ctrader_pwd*
+.runtime_pwd*
+*.runtime_pwd*
+ctrader_account.txt
+pwd.txt
+account_login.env
+telegram.env
+telegrame.env
+API_key.env
+VPS_IP.txt
+!VPS_IP.txt.example
+VPS_Linux.txt
+!VPS_Linux.txt.example
+vps_data/
+*.env
+!*.env.example
+
+## Temporary, Scratch & Profiling
+scratch/
+chrome_profile/
+error_screenshot.png
+logs/
+*.log
+venv/
+.pytest_cache/
+
+## Node / Frontend
+frontend/node_modules/
+frontend/dist/
+
+## Large Data Files, Reports & Logs
+HistoricalData/
+opt_reports/
+cli_out.txt
+.codegraph/
