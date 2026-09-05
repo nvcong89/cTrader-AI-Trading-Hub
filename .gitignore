@@ -49,6 +49,7 @@ logs/
 *.log
 venv/
 .pytest_cache/
+test_*.py
 
 ## Node / Frontend
 frontend/node_modules/
