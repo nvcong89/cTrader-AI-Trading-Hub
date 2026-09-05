@@ -12,10 +12,6 @@
 ## Build Artifacts & Binary Libraries
 *.cache
 *.vsidx
-bin/
-obj/
-**/bin/
-**/obj/
 
 
 ## Temporary & Backup Files
