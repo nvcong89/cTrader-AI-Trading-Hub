@@ -19,7 +19,8 @@ import {
   Sparkles,
   Download,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Clock
 } from 'lucide-react';
 
 interface AccountItem {
@@ -141,26 +142,82 @@ export default function AccountManagerTab({ isGuest: _isGuest = false, onNavigat
   };
   const [profileForm, setProfileForm] = useState(initialProfileForm);
 
-  const fetchFullList = async () => {
+  // Realtime Polling & Refresh State
+  const [refreshInterval, setRefreshInterval] = useState<number>(() => {
+    const saved = localStorage.getItem('account_manager_refresh_interval');
+    return saved !== null ? Number(saved) : 15;
+  });
+  const [isSilentRefreshing, setIsSilentRefreshing] = useState<boolean>(false);
+  const [lastUpdatedTime, setLastUpdatedTime] = useState<string | null>(null);
+
+  const handleIntervalChange = (newInterval: number) => {
+    setRefreshInterval(newInterval);
+    localStorage.setItem('account_manager_refresh_interval', String(newInterval));
+  };
+
+  const fetchFullList = async (isSilent: boolean = false) => {
     try {
-      setLoading(true);
+      if (!isSilent) {
+        setLoading(true);
+      } else {
+        setIsSilentRefreshing(true);
+      }
       const res = await axios.get(`${getApiBaseUrl()}/api/accounts/full-list`, { withCredentials: true });
       setAccounts(res.data.accounts || []);
       setProfiles(res.data.profiles || []);
+      setLastUpdatedTime(new Date().toLocaleTimeString('vi-VN'));
       if (res.data.profiles && res.data.profiles.length > 0 && !addForm.profile_id) {
         setAddForm(prev => ({ ...prev, profile_id: res.data.profiles[0].id }));
       }
     } catch (err: any) {
-      const msg = err.response?.data?.detail || 'Không thể tải danh sách tài khoản.';
-      setActionMessage({ type: 'error', text: msg });
+      if (!isSilent) {
+        const msg = err.response?.data?.detail || 'Không thể tải danh sách tài khoản.';
+        setActionMessage({ type: 'error', text: msg });
+      }
     } finally {
-      setLoading(false);
+      if (!isSilent) setLoading(false);
+      setIsSilentRefreshing(false);
     }
   };
 
   useEffect(() => {
     fetchFullList();
   }, []);
+
+  // Realtime balance & equity auto-refresh interval with VPS & Modal safety guards
+  useEffect(() => {
+    if (refreshInterval <= 0) return;
+
+    const interval = setInterval(() => {
+      // Safety guards:
+      // 1. Auto-pause when tab is hidden to preserve 100% VPS resources
+      // 2. Auto-pause when any modal or background action is open/running to prevent UI disruptions
+      const isAnyModalOpen = isAddModalOpen || isEditModalOpen || isRawJsonModalOpen || 
+                             isDeleteModalOpen || isAddProfileModalOpen || isEditProfileModalOpen || 
+                             isDeleteProfileModalOpen || submittingProfile || savingRawJson || 
+                             testingProfileId !== null || refreshingProfileId !== null || scanningProfileId !== null;
+
+      if (!document.hidden && !isAnyModalOpen) {
+        fetchFullList(true);
+      }
+    }, refreshInterval * 1000);
+
+    return () => clearInterval(interval);
+  }, [
+    refreshInterval, 
+    isAddModalOpen, 
+    isEditModalOpen, 
+    isRawJsonModalOpen, 
+    isDeleteModalOpen, 
+    isAddProfileModalOpen, 
+    isEditProfileModalOpen, 
+    isDeleteProfileModalOpen,
+    submittingProfile,
+    savingRawJson,
+    testingProfileId,
+    refreshingProfileId,
+    scanningProfileId
+  ]);
 
   const handleReloadConfig = async () => {
     try {
@@ -484,13 +541,76 @@ export default function AccountManagerTab({ isGuest: _isGuest = false, onNavigat
               </h1>
               <p style={{ margin: 0, fontSize: '0.8rem', color: '#94a3b8' }}>
                 Quản lý tập trung các tài khoản giao dịch, hồ sơ cTrader ID (CTID) và cấu hình cTrader Open API
+                {lastUpdatedTime && (
+                  <span style={{ marginLeft: '0.6rem', color: '#64748b', fontSize: '0.75rem' }}>
+                    • Cập nhật: <span style={{ color: '#38bdf8', fontWeight: 600 }}>{lastUpdatedTime}</span>
+                  </span>
+                )}
               </p>
             </div>
           </div>
         </div>
 
-        {/* Global Action Buttons */}
+        {/* Global Action Buttons & Realtime Controls */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+          {/* Quick Refresh Balance Button */}
+          <button
+            onClick={() => fetchFullList(true)}
+            disabled={isSilentRefreshing || loading}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.4rem',
+              background: 'rgba(30, 41, 59, 0.8)',
+              color: '#34d399',
+              border: '1px solid rgba(52, 211, 153, 0.25)',
+              padding: '0.55rem 0.85rem',
+              borderRadius: '6px',
+              fontSize: '0.825rem',
+              fontWeight: 600,
+              cursor: (isSilentRefreshing || loading) ? 'not-allowed' : 'pointer',
+              transition: 'all 0.15s ease'
+            }}
+            title="Cập nhật số dư Balance và Equity tức thì từ hệ thống"
+          >
+            <RefreshCw size={14} className={isSilentRefreshing ? 'spin' : ''} />
+            {isSilentRefreshing ? 'Đang cập nhật...' : 'Làm mới số dư'}
+          </button>
+
+          {/* Auto-Refresh Interval Selector */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.4rem',
+            background: 'rgba(15, 23, 42, 0.7)',
+            border: '1px solid #334155',
+            borderRadius: '6px',
+            padding: '0.35rem 0.65rem'
+          }}
+          title="Tự động làm mới số dư ngầm (tự ngắt khi ẩn tab hoặc mở modal)"
+          >
+            <Clock size={13} color="#94a3b8" />
+            <span style={{ fontSize: '0.75rem', color: '#94a3b8', fontWeight: 500 }}>Tự động:</span>
+            <select
+              value={refreshInterval}
+              onChange={(e) => handleIntervalChange(Number(e.target.value))}
+              style={{
+                background: 'transparent',
+                color: refreshInterval > 0 ? '#38bdf8' : '#64748b',
+                border: 'none',
+                fontSize: '0.78rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+                outline: 'none'
+              }}
+            >
+              <option value={15} style={{ background: '#1e293b', color: '#fff' }}>15s</option>
+              <option value={30} style={{ background: '#1e293b', color: '#fff' }}>30s</option>
+              <option value={60} style={{ background: '#1e293b', color: '#fff' }}>60s</option>
+              <option value={0} style={{ background: '#1e293b', color: '#fff' }}>Tắt</option>
+            </select>
+          </div>
+
           <button
             onClick={() => setIsAddModalOpen(true)}
             style={{
