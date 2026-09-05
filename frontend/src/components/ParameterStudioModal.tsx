@@ -16,9 +16,8 @@ import {
   TrendingUp,
   Bell,
   RefreshCw,
-  Key,
-  Eye,
-  EyeOff
+  Wallet,
+  ShieldCheck
 } from 'lucide-react';
 
 interface ParameterMeta {
@@ -32,10 +31,25 @@ interface ParameterMeta {
   EnumValues?: { [key: string]: number };
 }
 
+interface AccountItem {
+  account_id: string;
+  account_label?: string;
+  account_type?: string;
+  broker?: string;
+  currency?: string;
+  ctid_email?: string;
+  profile_id?: string;
+  balance?: number;
+  equity?: number;
+  last_updated?: string;
+}
+
 interface ParameterStudioModalProps {
   botId: number;
   botName: string;
   status: 'RUNNING' | 'STOPPED' | 'ERROR';
+  accounts?: AccountItem[];
+  onNavigateToAccounts?: () => void;
   onClose: () => void;
   onSuccess: (msg: string) => void;
   isGuest?: boolean;
@@ -45,6 +59,8 @@ export default function ParameterStudioModal({
   botId,
   botName,
   status,
+  accounts = [],
+  onNavigateToAccounts,
   onClose,
   onSuccess,
   isGuest = false
@@ -54,10 +70,9 @@ export default function ParameterStudioModal({
   const [error, setError] = useState<string | null>(null);
   const [parameters, setParameters] = useState<ParameterMeta[]>([]);
   const [formValues, setFormValues] = useState<{ [key: string]: any }>({});
-  const [selectedGroup, setSelectedGroup] = useState<string>('Account & CTID');
+  const [selectedGroup, setSelectedGroup] = useState<string>('Account & Bot');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [restartOnSave, setRestartOnSave] = useState<boolean>(status === 'RUNNING');
-  const [showPassword, setShowPassword] = useState<boolean>(false);
 
   // Bot Instance Account & Credential Configuration
   const [accountInfo, setAccountInfo] = useState({
@@ -122,7 +137,7 @@ export default function ParameterStudioModal({
 
   // Filtered parameters
   const filteredParams = parameters.filter((p) => {
-    if (selectedGroup === 'Account & CTID') return false;
+    if (selectedGroup === 'Account & Bot') return false;
     if (selectedGroup !== 'ALL' && (p.GroupName || 'General') !== selectedGroup) {
       return false;
     }
@@ -168,8 +183,8 @@ export default function ParameterStudioModal({
           account_id: accountInfo.account_id,
           account_label: accountInfo.account_label,
           account_type: accountInfo.account_type,
-          ctid_email: accountInfo.ctid_email,
-          ctid_password: accountInfo.ctid_password,
+          ctid_email: '',
+          ctid_password: '',
           symbol: accountInfo.symbol,
           timeframe: accountInfo.timeframe
         },
@@ -192,7 +207,7 @@ export default function ParameterStudioModal({
 
   const getGroupIcon = (groupName: string) => {
     const gn = groupName.toLowerCase();
-    if (gn.includes('account') || gn.includes('ctid')) return <Key size={14} />;
+    if (gn.includes('account') || gn.includes('bot') || gn.includes('ctid')) return <Wallet size={14} />;
     if (gn.includes('risk') || gn.includes('volume')) return <Shield size={14} />;
     if (gn.includes('stop') || gn.includes('profit') || gn.includes('target')) return <Target size={14} />;
     if (gn.includes('indicator') || gn.includes('trend')) return <TrendingUp size={14} />;
@@ -383,7 +398,7 @@ export default function ParameterStudioModal({
 
               <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <button
-                  onClick={() => setSelectedGroup('Account & CTID')}
+                  onClick={() => setSelectedGroup('Account & Bot')}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -392,16 +407,16 @@ export default function ParameterStudioModal({
                     padding: '8px 10px',
                     borderRadius: '8px',
                     border: 'none',
-                    background: selectedGroup === 'Account & CTID' ? 'rgba(56, 189, 248, 0.15)' : 'transparent',
-                    color: selectedGroup === 'Account & CTID' ? '#38bdf8' : '#94a3b8',
+                    background: selectedGroup === 'Account & Bot' ? 'rgba(56, 189, 248, 0.15)' : 'transparent',
+                    color: selectedGroup === 'Account & Bot' ? '#38bdf8' : '#94a3b8',
                     fontSize: '0.78rem',
-                    fontWeight: selectedGroup === 'Account & CTID' ? 700 : 500,
+                    fontWeight: selectedGroup === 'Account & Bot' ? 700 : 500,
                     cursor: 'pointer',
                     textAlign: 'left'
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Key size={14} color={selectedGroup === 'Account & CTID' ? '#38bdf8' : '#64748b'} /> Account & CTID
+                    <Wallet size={14} color={selectedGroup === 'Account & Bot' ? '#38bdf8' : '#64748b'} /> Tài khoản & Bot
                   </div>
                   <span style={{ fontSize: '0.65rem', background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8', padding: '1px 5px', borderRadius: '4px' }}>Config</span>
                 </button>
@@ -466,9 +481,9 @@ export default function ParameterStudioModal({
 
             {/* Right Parameter Editors Area */}
             <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem 1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              {selectedGroup === 'Account & CTID' ? (
+              {selectedGroup === 'Account & Bot' ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-                  {/* Account & CTID Credentials Card */}
+                  {/* Account & Bot Configuration Card */}
                   <div
                     style={{
                       background: 'rgba(30, 41, 59, 0.4)',
@@ -477,179 +492,223 @@ export default function ParameterStudioModal({
                       padding: '1.25rem',
                       display: 'flex',
                       flexDirection: 'column',
-                      gap: '1rem'
+                      gap: '1.25rem'
                     }}
                   >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', borderBottom: '1px solid rgba(255, 255, 255, 0.08)', paddingBottom: '0.75rem' }}>
-                      <Key size={18} color="#38bdf8" />
-                      <div>
-                        <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#f8fafc' }}>
-                          cTrader CTID & Account Credentials
-                        </div>
-                        <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
-                          Tài khoản cTrader CTID & Số tài khoản được liên kết cho Bot #{botId}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid rgba(255, 255, 255, 0.08)', paddingBottom: '0.75rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <Wallet size={18} color="#38bdf8" />
+                        <div>
+                          <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#f8fafc' }}>
+                            Thông tin Tài khoản & Bot Instance
+                          </div>
+                          <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
+                            Quản trị liên kết tài khoản cTrader & thông tin thực thi cho Bot #{botId}
+                          </div>
                         </div>
                       </div>
+                      {onNavigateToAccounts && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onClose();
+                            onNavigateToAccounts();
+                          }}
+                          style={{
+                            background: 'transparent',
+                            border: 'none',
+                            color: '#38bdf8',
+                            fontSize: '0.75rem',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.25rem',
+                            padding: '0.25rem 0.5rem',
+                            borderRadius: '4px'
+                          }}
+                        >
+                          <Sliders size={12} /> Quản lý tài khoản
+                        </button>
+                      )}
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem' }}>
-                      {/* CTID Email / Username */}
-                      <div>
-                        <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', marginBottom: '4px', textTransform: 'uppercase' }}>
-                          cTrader CTID Email / Username
-                        </label>
-                        <input
-                          type="text"
-                          placeholder="e.g. user@example.com"
-                          value={accountInfo.ctid_email}
-                          onChange={(e) => setAccountInfo({ ...accountInfo, ctid_email: e.target.value })}
-                          style={{
-                            width: '100%',
-                            background: '#090d16',
-                            border: '1px solid rgba(255, 255, 255, 0.15)',
-                            borderRadius: '6px',
-                            color: '#f8fafc',
-                            padding: '0.55rem 0.75rem',
-                            fontSize: '0.85rem',
-                            boxSizing: 'border-box'
-                          }}
-                        />
-                      </div>
-
-                      {/* CTID Password */}
-                      <div>
-                        <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', marginBottom: '4px', textTransform: 'uppercase' }}>
-                          cTrader CTID Password
-                        </label>
-                        <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-                          <input
-                            type={showPassword ? 'text' : 'password'}
-                            placeholder="Nhập mật khẩu CTID..."
-                            value={accountInfo.ctid_password}
-                            onChange={(e) => setAccountInfo({ ...accountInfo, ctid_password: e.target.value })}
+                    {/* Account Selector */}
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', marginBottom: '6px', textTransform: 'uppercase' }}>
+                        Tài khoản Giao dịch (Connected cTrader Account)
+                      </label>
+                      {accounts.length === 0 ? (
+                        <div style={{
+                          background: 'rgba(239, 68, 68, 0.1)',
+                          border: '1px solid rgba(239, 68, 68, 0.3)',
+                          borderRadius: '8px',
+                          padding: '0.75rem 1rem',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between'
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fca5a5', fontSize: '0.825rem' }}>
+                            <AlertCircle size={16} />
+                            <span>Chưa có danh sách tài khoản được cấu hình trong hệ thống.</span>
+                          </div>
+                          {onNavigateToAccounts && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onClose();
+                                onNavigateToAccounts();
+                              }}
+                              style={{
+                                background: '#0284c7',
+                                border: 'none',
+                                color: 'white',
+                                fontSize: '0.75rem',
+                                padding: '0.3rem 0.65rem',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                fontWeight: 600
+                              }}
+                            >
+                              + Thêm tài khoản
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <>
+                          <select
+                            value={accountInfo.account_id}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              const matched = accounts.find((a) => String(a.account_id) === val);
+                              if (matched) {
+                                const isLive = (matched.account_type || '').toLowerCase() === 'live';
+                                setAccountInfo(prev => ({
+                                  ...prev,
+                                  account_id: String(matched.account_id),
+                                  account_label: matched.account_label || `Account #${matched.account_id}`,
+                                  account_type: isLive ? 'live' : 'demo'
+                                }));
+                              } else {
+                                setAccountInfo(prev => ({ ...prev, account_id: val }));
+                              }
+                            }}
                             style={{
                               width: '100%',
                               background: '#090d16',
                               border: '1px solid rgba(255, 255, 255, 0.15)',
                               borderRadius: '6px',
                               color: '#f8fafc',
-                              padding: '0.55rem 2.2rem 0.55rem 0.75rem',
-                              fontSize: '0.85rem',
+                              padding: '0.6rem 0.75rem',
+                              fontSize: '0.875rem',
                               boxSizing: 'border-box'
                             }}
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowPassword(!showPassword)}
-                            style={{
-                              position: 'absolute',
-                              right: '8px',
-                              background: 'transparent',
-                              border: 'none',
-                              color: '#64748b',
-                              cursor: 'pointer',
-                              display: 'flex',
-                              alignItems: 'center'
-                            }}
                           >
-                            {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                          </button>
-                        </div>
-                      </div>
+                            <option value="" disabled>-- Chọn tài khoản cTrader --</option>
+                            {accounts.filter(a => (a.account_type || '').toLowerCase() === 'live').length > 0 && (
+                              <optgroup label="🟢 TÀI KHOẢN LIVE / REAL">
+                                {accounts.filter(a => (a.account_type || '').toLowerCase() === 'live').map((acc) => (
+                                  <option key={acc.account_id} value={acc.account_id}>
+                                    🟢 [LIVE] {acc.broker ? `${acc.broker} ` : ''}#{acc.account_id} {acc.account_label ? `— ${acc.account_label}` : ''} {acc.equity ? `(Equity: $${acc.equity.toLocaleString()})` : ''}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            )}
+                            {accounts.filter(a => (a.account_type || '').toLowerCase() !== 'live').length > 0 && (
+                              <optgroup label="🔵 TÀI KHOẢN DEMO">
+                                {accounts.filter(a => (a.account_type || '').toLowerCase() !== 'live').map((acc) => (
+                                  <option key={acc.account_id} value={acc.account_id}>
+                                    🔵 [DEMO] {acc.broker ? `${acc.broker} ` : ''}#{acc.account_id} {acc.account_label ? `— ${acc.account_label}` : ''} {acc.equity ? `(Equity: $${acc.equity.toLocaleString()})` : ''}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            )}
+                          </select>
 
-                      {/* Account Number */}
-                      <div>
-                        <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', marginBottom: '4px', textTransform: 'uppercase' }}>
-                          Số Tài Khoản (Account ID)
-                        </label>
-                        <input
-                          type="text"
-                          placeholder="e.g. 1234567"
-                          value={accountInfo.account_id}
-                          onChange={(e) => setAccountInfo({ ...accountInfo, account_id: e.target.value })}
-                          style={{
-                            width: '100%',
-                            background: '#090d16',
-                            border: '1px solid rgba(255, 255, 255, 0.15)',
-                            borderRadius: '6px',
-                            color: '#f8fafc',
-                            padding: '0.55rem 0.75rem',
-                            fontSize: '0.85rem',
-                            boxSizing: 'border-box'
-                          }}
-                        />
-                      </div>
+                          {/* Selected Account Summary Card */}
+                          {(() => {
+                            const selectedAcc = accounts.find(a => String(a.account_id) === String(accountInfo.account_id));
+                            if (!selectedAcc) return null;
+                            const isLive = (selectedAcc.account_type || '').toLowerCase() === 'live';
+                            return (
+                              <div style={{
+                                marginTop: '0.6rem',
+                                padding: '0.75rem 1rem',
+                                background: 'rgba(15, 23, 42, 0.75)',
+                                border: `1px solid ${isLive ? 'rgba(245, 158, 11, 0.4)' : 'rgba(56, 189, 248, 0.4)'}`,
+                                borderRadius: '8px',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '0.45rem'
+                              }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    <span style={{
+                                      fontSize: '0.7rem',
+                                      fontWeight: 800,
+                                      padding: '0.15rem 0.45rem',
+                                      borderRadius: '4px',
+                                      background: isLive ? 'rgba(245, 158, 11, 0.2)' : 'rgba(56, 189, 248, 0.2)',
+                                      color: isLive ? '#fbbf24' : '#38bdf8',
+                                      border: `1px solid ${isLive ? 'rgba(245, 158, 11, 0.4)' : 'rgba(56, 189, 248, 0.4)'}`
+                                    }}>
+                                      {isLive ? 'LIVE' : 'DEMO'}
+                                    </span>
+                                    {selectedAcc.broker && (
+                                      <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#cbd5e1', background: '#334155', padding: '0.1rem 0.45rem', borderRadius: '4px' }}>
+                                        {selectedAcc.broker}
+                                      </span>
+                                    )}
+                                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', fontWeight: 700, color: '#f8fafc' }}>
+                                      #{selectedAcc.account_id}
+                                    </span>
+                                    {selectedAcc.account_label && (
+                                      <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
+                                        ({selectedAcc.account_label})
+                                      </span>
+                                    )}
+                                  </div>
+                                  {selectedAcc.equity !== undefined && (
+                                    <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#10b981' }}>
+                                      Equity: ${selectedAcc.equity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    </div>
+                                  )}
+                                </div>
+                                <div style={{ fontSize: '0.75rem', color: '#64748b', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                                  <ShieldCheck size={13} color="#10b981" />
+                                  <span>Tự động liên kết CTID Profile an toàn (không cần nhập mật khẩu)</span>
+                                </div>
+                              </div>
+                            );
+                          })()}
+                        </>
+                      )}
+                    </div>
 
-                      {/* Account Alias / Label */}
-                      <div>
-                        <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', marginBottom: '4px', textTransform: 'uppercase' }}>
-                          Tên Tài Khoản (Account Label)
-                        </label>
-                        <input
-                          type="text"
-                          placeholder="e.g. Demo Scalper 10k"
-                          value={accountInfo.account_label}
-                          onChange={(e) => setAccountInfo({ ...accountInfo, account_label: e.target.value })}
-                          style={{
-                            width: '100%',
-                            background: '#090d16',
-                            border: '1px solid rgba(255, 255, 255, 0.15)',
-                            borderRadius: '6px',
-                            color: '#f8fafc',
-                            padding: '0.55rem 0.75rem',
-                            fontSize: '0.85rem',
-                            boxSizing: 'border-box'
-                          }}
-                        />
-                      </div>
+                    {/* Instance Name */}
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', marginBottom: '4px', textTransform: 'uppercase' }}>
+                        Tên Instance (Bot Name)
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Smart Trend Bot Pro"
+                        value={accountInfo.name}
+                        onChange={(e) => setAccountInfo({ ...accountInfo, name: e.target.value })}
+                        style={{
+                          width: '100%',
+                          background: '#090d16',
+                          border: '1px solid rgba(255, 255, 255, 0.15)',
+                          borderRadius: '6px',
+                          color: '#f8fafc',
+                          padding: '0.55rem 0.75rem',
+                          fontSize: '0.85rem',
+                          boxSizing: 'border-box'
+                        }}
+                      />
+                    </div>
 
-                      {/* Account Type */}
-                      <div>
-                        <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', marginBottom: '4px', textTransform: 'uppercase' }}>
-                          Loại Tài Khoản (Account Type)
-                        </label>
-                        <select
-                          value={accountInfo.account_type}
-                          onChange={(e) => setAccountInfo({ ...accountInfo, account_type: e.target.value })}
-                          style={{
-                            width: '100%',
-                            background: '#090d16',
-                            border: '1px solid rgba(255, 255, 255, 0.15)',
-                            borderRadius: '6px',
-                            color: '#f8fafc',
-                            padding: '0.55rem 0.75rem',
-                            fontSize: '0.85rem',
-                            boxSizing: 'border-box'
-                          }}
-                        >
-                          <option value="demo">DEMO</option>
-                          <option value="live">LIVE / REAL</option>
-                        </select>
-                      </div>
-
-                      {/* Instance Name */}
-                      <div>
-                        <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', marginBottom: '4px', textTransform: 'uppercase' }}>
-                          Tên Instance (Bot Name)
-                        </label>
-                        <input
-                          type="text"
-                          placeholder="e.g. Smart Trend Bot"
-                          value={accountInfo.name}
-                          onChange={(e) => setAccountInfo({ ...accountInfo, name: e.target.value })}
-                          style={{
-                            width: '100%',
-                            background: '#090d16',
-                            border: '1px solid rgba(255, 255, 255, 0.15)',
-                            borderRadius: '6px',
-                            color: '#f8fafc',
-                            padding: '0.55rem 0.75rem',
-                            fontSize: '0.85rem',
-                            boxSizing: 'border-box'
-                          }}
-                        />
-                      </div>
-
+                    {/* Symbol & Timeframe Grid */}
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
                       {/* Symbol */}
                       <div>
                         <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', marginBottom: '4px', textTransform: 'uppercase' }}>

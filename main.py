@@ -2406,12 +2406,21 @@ async def save_bot_parameters(bot_id: int, data: SaveParametersRequest, request:
         if data.account_type is not None and data.account_type.strip() and "account_type" in existing_bot_cols:
             updates.append("account_type = ?")
             values.append(data.account_type.strip())
-        if data.ctid_email is not None:
+        if data.ctid_email is not None and data.ctid_email.strip():
             updates.append("ctid_email = ?")
             values.append(data.ctid_email.strip())
-        if data.ctid_password is not None:
-            updates.append("ctid_password = ?")
-            values.append(data.ctid_password.strip())
+            if data.ctid_password is not None:
+                updates.append("ctid_password = ?")
+                values.append(data.ctid_password.strip())
+        elif data.account_id is not None and data.account_id.strip():
+            # Auto-resolve credentials from account_config for the updated account
+            resolved_ctid, resolved_pwd = get_ctrader_credentials({"account_id": data.account_id.strip()})
+            if resolved_ctid:
+                updates.append("ctid_email = ?")
+                values.append(resolved_ctid)
+            if resolved_pwd:
+                updates.append("ctid_password = ?")
+                values.append(resolved_pwd)
         target_acc = data.account_id.strip() if (data.account_id and data.account_id.strip()) else bot.get('account_id')
         acc_broker = get_account_broker(target_acc, bot)
         if data.symbol is not None and data.symbol.strip():

@@ -3199,6 +3199,8 @@ export default function BotManagerTab({ data, refreshData, isGuest = false, onNa
           botId={paramModalBot.id}
           botName={paramModalBot.name}
           status={paramModalBot.status}
+          accounts={accounts}
+          onNavigateToAccounts={onNavigateToAccounts}
           onClose={() => setParamModalBot(null)}
           onSuccess={(msg) => {
             showBanner('success', msg);
