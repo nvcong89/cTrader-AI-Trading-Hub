@@ -13,7 +13,10 @@ from account_config import (
     get_all_configured_accounts,
     sync_accounts_to_database,
     sanitize_profiles_for_api,
-    build_fallback_config
+    build_fallback_config,
+    create_profile,
+    update_profile,
+    delete_profile
 )
 
 def test_load_accounts_config():
@@ -138,4 +141,54 @@ def test_account_details_with_stats_has_balance_equity():
         assert "equity" in s
         assert isinstance(s["balance"], (int, float))
         assert isinstance(s["equity"], (int, float))
+
+def test_profile_crud_lifecycle():
+    # 1. Create Profile
+    test_prof_data = {
+        "profile_name": "Test Automation Profile",
+        "ctid_email": "test_automation_unique@example.com",
+        "ctid_password": "TestPassword123",
+        "enabled": True,
+        "open_api": {
+            "client_id": "test_client_id",
+            "client_secret": "test_client_secret"
+        }
+    }
+    success, msg, prof_id = create_profile(test_prof_data)
+    assert success is True
+    assert prof_id is not None
+    assert "Test Automation Profile" in msg
+
+    # Verify created
+    created_p = get_profile_by_id(prof_id)
+    assert created_p is not None
+    assert created_p["ctid_email"] == "test_automation_unique@example.com"
+    assert created_p["ctid_password"] == "TestPassword123"
+
+    # Duplicate email check
+    dup_success, dup_msg, _ = create_profile(test_prof_data)
+    assert dup_success is False
+    assert "đã tồn tại" in dup_msg
+
+    # 2. Update Profile
+    update_data = {
+        "profile_name": "Updated Automation Profile",
+        "enabled": False,
+        "ctid_password": ""  # Blank should preserve existing
+    }
+    up_success, up_msg = update_profile(prof_id, update_data)
+    assert up_success is True
+
+    updated_p = get_profile_by_id(prof_id)
+    assert updated_p["profile_name"] == "Updated Automation Profile"
+    assert updated_p["enabled"] is False
+    assert updated_p["ctid_password"] == "TestPassword123"  # Preserved!
+
+    # 3. Delete Profile
+    del_success, del_msg = delete_profile(prof_id)
+    assert del_success is True
+
+    deleted_p = get_profile_by_id(prof_id)
+    assert deleted_p is None
+
 

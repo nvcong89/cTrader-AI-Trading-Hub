@@ -1585,6 +1585,73 @@ async def scan_profile_accounts(profile_id: str, request: Request):
         raise HTTPException(status_code=400, detail=result.get("message", "Quét tài khoản cTID thất bại"))
     return result
 
+class OpenApiPayload(BaseModel):
+    client_id: Optional[str] = ""
+    client_secret: Optional[str] = ""
+    access_token: Optional[str] = ""
+    refresh_token: Optional[str] = ""
+    environment: Optional[str] = "live"
+    redirect_uri: Optional[str] = "https://openapi.ctrader.com/apps/token"
+
+class CreateProfilePayload(BaseModel):
+    profile_name: str
+    ctid_email: str
+    ctid_password: str
+    enabled: Optional[bool] = True
+    auto_scan: Optional[bool] = True
+    open_api: Optional[OpenApiPayload] = None
+
+class UpdateProfilePayload(BaseModel):
+    profile_name: Optional[str] = None
+    ctid_email: Optional[str] = None
+    ctid_password: Optional[str] = None
+    enabled: Optional[bool] = None
+    open_api: Optional[OpenApiPayload] = None
+
+@app.post("/api/accounts/profiles")
+async def create_profile_endpoint(payload: CreateProfilePayload, request: Request):
+    require_admin(request)
+    from account_config import create_profile, scan_accounts_from_ctid
+    p_data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+    auto_scan = p_data.pop("auto_scan", True)
+    success, msg, profile_id = create_profile(p_data)
+    if not success:
+        raise HTTPException(status_code=400, detail=msg)
+    
+    scan_result = None
+    if auto_scan and profile_id:
+        try:
+            scan_result = await asyncio.to_thread(scan_accounts_from_ctid, profile_id)
+        except Exception as ex:
+            scan_result = {"status": "warning", "message": f"Tạo hồ sơ thành công nhưng quét tài khoản gặp lỗi: {ex}"}
+
+    return {
+        "status": "success",
+        "message": msg,
+        "profile_id": profile_id,
+        "scan_result": scan_result
+    }
+
+@app.put("/api/accounts/profiles/{profile_id}")
+async def update_profile_endpoint(profile_id: str, payload: UpdateProfilePayload, request: Request):
+    require_admin(request)
+    from account_config import update_profile
+    raw_dict = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+    p_data = {k: v for k, v in raw_dict.items() if v is not None}
+    success, msg = update_profile(profile_id, p_data)
+    if not success:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "success", "message": msg}
+
+@app.delete("/api/accounts/profiles/{profile_id}")
+async def delete_profile_endpoint(profile_id: str, request: Request, force: bool = False):
+    require_admin(request)
+    from account_config import delete_profile
+    success, msg = delete_profile(profile_id, force=force)
+    if not success:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "success", "message": msg}
+
 class CreateAccountPayload(BaseModel):
     profile_id: str
     account_id: str

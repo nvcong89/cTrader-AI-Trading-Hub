@@ -97,6 +97,49 @@ def test_scan_accounts_error_handling():
     assert res["status"] == "error"
     assert "không tồn tại" in res["message"]
 
+def test_profile_api_endpoints(monkeypatch):
+    from fastapi.testclient import TestClient
+    from main import app
+    import main
+
+    # Mock require_admin to bypass auth in test
+    monkeypatch.setattr(main, "require_admin", lambda req: {"username": "admin", "role": "admin"})
+
+    client = TestClient(app)
+
+    # 1. Create Profile API
+    payload = {
+        "profile_name": "API Test Profile",
+        "ctid_email": "api_test_unique@example.com",
+        "ctid_password": "MySecretPassword123",
+        "enabled": True,
+        "auto_scan": False,
+        "open_api": {
+            "client_id": "test_cid",
+            "environment": "demo"
+        }
+    }
+    resp = client.post("/api/accounts/profiles", json=payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "success"
+    prof_id = data["profile_id"]
+    assert prof_id is not None
+
+    # 2. Update Profile API
+    up_payload = {
+        "profile_name": "API Test Profile Updated",
+        "enabled": False
+    }
+    resp_up = client.put(f"/api/accounts/profiles/{prof_id}", json=up_payload)
+    assert resp_up.status_code == 200
+    assert resp_up.json()["status"] == "success"
+
+    # 3. Delete Profile API
+    resp_del = client.delete(f"/api/accounts/profiles/{prof_id}")
+    assert resp_del.status_code == 200
+    assert resp_del.json()["status"] == "success"
+
 if __name__ == "__main__":
     print("Running Account Manager backend unit tests...")
     test_account_crud_and_sync()
@@ -104,3 +147,4 @@ if __name__ == "__main__":
     test_refresh_token_missing()
     test_scan_accounts_error_handling()
     print("ALL Account Manager tests PASSED successfully!")
+

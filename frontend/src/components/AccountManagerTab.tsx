@@ -17,7 +17,9 @@ import {
   Radio,
   Layers,
   Sparkles,
-  Download
+  Download,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 
 interface AccountItem {
@@ -112,6 +114,32 @@ export default function AccountManagerTab({ isGuest: _isGuest = false, onNavigat
   const [rawJsonText, setRawJsonText] = useState<string>('');
   const [rawJsonError, setRawJsonError] = useState<string | null>(null);
   const [savingRawJson, setSavingRawJson] = useState<boolean>(false);
+
+  // Profile Modals State
+  const [isAddProfileModalOpen, setIsAddProfileModalOpen] = useState<boolean>(false);
+  const [isEditProfileModalOpen, setIsEditProfileModalOpen] = useState<boolean>(false);
+  const [isDeleteProfileModalOpen, setIsDeleteProfileModalOpen] = useState<boolean>(false);
+  const [targetProfile, setTargetProfile] = useState<ProfileItem | null>(null);
+  const [isOpenApiAccordionOpen, setIsOpenApiAccordionOpen] = useState<boolean>(false);
+  const [submittingProfile, setSubmittingProfile] = useState<boolean>(false);
+
+  // Profile Form State
+  const initialProfileForm = {
+    profile_name: '',
+    ctid_email: '',
+    ctid_password: '',
+    enabled: true,
+    auto_scan: true,
+    open_api: {
+      client_id: '',
+      client_secret: '',
+      access_token: '',
+      refresh_token: '',
+      environment: 'live',
+      redirect_uri: 'https://openapi.ctrader.com/apps/token'
+    }
+  };
+  const [profileForm, setProfileForm] = useState(initialProfileForm);
 
   const fetchFullList = async () => {
     try {
@@ -267,6 +295,97 @@ export default function AccountManagerTab({ isGuest: _isGuest = false, onNavigat
       await fetchFullList();
     } catch (err: any) {
       setActionMessage({ type: 'error', text: err.response?.data?.detail || 'Lỗi xóa tài khoản.' });
+    } finally {
+      setIsDeleteModalOpen(false);
+    }
+  };
+
+  const handleOpenAddProfile = () => {
+    setProfileForm(initialProfileForm);
+    setIsOpenApiAccordionOpen(false);
+    setIsAddProfileModalOpen(true);
+  };
+
+  const handleOpenEditProfile = (prof: ProfileItem) => {
+    setTargetProfile(prof);
+    setProfileForm({
+      profile_name: prof.profile_name || '',
+      ctid_email: prof.ctid_email || '',
+      ctid_password: '',
+      enabled: prof.enabled !== false,
+      auto_scan: false,
+      open_api: {
+        client_id: prof.open_api?.client_id || '',
+        client_secret: '',
+        access_token: '',
+        refresh_token: '',
+        environment: prof.open_api?.environment || 'live',
+        redirect_uri: prof.open_api?.redirect_uri || 'https://openapi.ctrader.com/apps/token'
+      }
+    });
+    setIsOpenApiAccordionOpen(Boolean(prof.open_api?.client_id));
+    setIsEditProfileModalOpen(true);
+  };
+
+  const handleOpenDeleteProfile = (prof: ProfileItem) => {
+    setTargetProfile(prof);
+    setIsDeleteProfileModalOpen(true);
+  };
+
+  const handleCreateProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!profileForm.profile_name || !profileForm.ctid_email || !profileForm.ctid_password) {
+      setActionMessage({ type: 'error', text: 'Vui lòng điền đầy đủ Tên hồ sơ, Email và Mật khẩu cTID.' });
+      return;
+    }
+    try {
+      setSubmittingProfile(true);
+      const res = await axios.post(`${getApiBaseUrl()}/api/accounts/profiles`, profileForm, { withCredentials: true });
+      let successMsg = res.data.message || 'Tạo hồ sơ cTID thành công.';
+      if (res.data.scan_result?.message) {
+        successMsg += ` ${res.data.scan_result.message}`;
+      }
+      setActionMessage({ type: 'success', text: successMsg });
+      setIsAddProfileModalOpen(false);
+      await fetchFullList();
+    } catch (err: any) {
+      const msg = err.response?.data?.detail || err.message || 'Lỗi tạo hồ sơ cTID.';
+      setActionMessage({ type: 'error', text: msg });
+    } finally {
+      setSubmittingProfile(false);
+    }
+  };
+
+  const handleUpdateProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!targetProfile) return;
+    try {
+      setSubmittingProfile(true);
+      const res = await axios.put(`${getApiBaseUrl()}/api/accounts/profiles/${targetProfile.id}`, profileForm, { withCredentials: true });
+      setActionMessage({ type: 'success', text: res.data.message || 'Cập nhật hồ sơ thành công.' });
+      setIsEditProfileModalOpen(false);
+      await fetchFullList();
+    } catch (err: any) {
+      const msg = err.response?.data?.detail || err.message || 'Lỗi cập nhật hồ sơ.';
+      setActionMessage({ type: 'error', text: msg });
+    } finally {
+      setSubmittingProfile(false);
+    }
+  };
+
+  const handleDeleteProfile = async () => {
+    if (!targetProfile) return;
+    try {
+      setSubmittingProfile(true);
+      const res = await axios.delete(`${getApiBaseUrl()}/api/accounts/profiles/${targetProfile.id}`, { withCredentials: true });
+      setActionMessage({ type: 'success', text: res.data.message || 'Đã xóa hồ sơ thành công.' });
+      setIsDeleteProfileModalOpen(false);
+      await fetchFullList();
+    } catch (err: any) {
+      const msg = err.response?.data?.detail || err.message || 'Lỗi khi xóa hồ sơ.';
+      setActionMessage({ type: 'error', text: msg });
+    } finally {
+      setSubmittingProfile(false);
     }
   };
 
@@ -508,11 +627,32 @@ export default function AccountManagerTab({ isGuest: _isGuest = false, onNavigat
 
       {/* SECTION 1: CTID PROFILES & OPEN API HEALTH CARDS */}
       <div style={{ marginBottom: '2rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
           <h2 style={{ fontSize: '1.1rem', fontWeight: 700, margin: 0, color: '#e2e8f0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <ShieldCheck size={18} color="#38bdf8" /> Hồ Sơ cTrader ID (CTID) & Spotware Open API
           </h2>
-          <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>{profiles.length} hồ sơ</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>{profiles.length} hồ sơ</span>
+            <button
+              onClick={handleOpenAddProfile}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.35rem',
+                background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
+                color: '#ffffff',
+                border: 'none',
+                padding: '0.4rem 0.8rem',
+                borderRadius: '6px',
+                fontSize: '0.78rem',
+                fontWeight: 700,
+                cursor: 'pointer',
+                boxShadow: '0 2px 10px rgba(2, 132, 199, 0.3)'
+              }}
+            >
+              <Plus size={14} /> Thêm Hồ Sơ cTID
+            </button>
+          </div>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: '1rem' }}>
@@ -547,17 +687,55 @@ export default function AccountManagerTab({ isGuest: _isGuest = false, onNavigat
                         <Mail size={13} /> {prof.ctid_email || 'Chưa cấu hình Email'}
                       </div>
                     </div>
-                    <span style={{
-                      fontSize: '0.68rem',
-                      fontWeight: 700,
-                      padding: '0.2rem 0.5rem',
-                      borderRadius: '4px',
-                      background: prof.enabled ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                      color: prof.enabled ? '#34d399' : '#f87171',
-                      border: `1px solid ${prof.enabled ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`
-                    }}>
-                      {prof.enabled ? 'ACTIVE' : 'DISABLED'}
-                    </span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <span style={{
+                        fontSize: '0.68rem',
+                        fontWeight: 700,
+                        padding: '0.2rem 0.5rem',
+                        borderRadius: '4px',
+                        background: prof.enabled ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                        color: prof.enabled ? '#34d399' : '#f87171',
+                        border: `1px solid ${prof.enabled ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`
+                      }}>
+                        {prof.enabled ? 'ACTIVE' : 'DISABLED'}
+                      </span>
+                      <button
+                        onClick={() => handleOpenEditProfile(prof)}
+                        style={{
+                          background: 'rgba(56, 189, 248, 0.15)',
+                          border: '1px solid rgba(56, 189, 248, 0.3)',
+                          color: '#38bdf8',
+                          padding: '0.25rem 0.45rem',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.2rem',
+                          fontSize: '0.72rem'
+                        }}
+                        title="Chỉnh sửa thông tin hồ sơ"
+                      >
+                        <Edit2 size={12} />
+                      </button>
+                      <button
+                        onClick={() => handleOpenDeleteProfile(prof)}
+                        style={{
+                          background: 'rgba(239, 68, 68, 0.15)',
+                          border: '1px solid rgba(239, 68, 68, 0.3)',
+                          color: '#f87171',
+                          padding: '0.25rem 0.45rem',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.2rem',
+                          fontSize: '0.72rem'
+                        }}
+                        title="Xóa hồ sơ cTID này"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
                   </div>
 
                   {/* Open API Status Box */}
@@ -1566,6 +1744,582 @@ export default function AccountManagerTab({ isGuest: _isGuest = false, onNavigat
                 }}
               >
                 Xác Nhận Xóa
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* MODAL 5: THÊM HỒ SƠ CTID MỚI */}
+      {isAddProfileModalOpen && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.75)',
+          backdropFilter: 'blur(3px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 110,
+          padding: '1rem'
+        }}>
+          <div style={{
+            background: '#1e293b',
+            border: '1px solid #334155',
+            borderRadius: '12px',
+            width: '100%',
+            maxWidth: '540px',
+            maxHeight: '90vh',
+            overflowY: 'auto',
+            padding: '1.5rem',
+            boxShadow: '0 20px 40px rgba(0, 0, 0, 0.5)'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
+              <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Plus size={18} color="#38bdf8" /> Thêm Hồ Sơ cTrader ID (CTID) Mới
+              </h3>
+              <button
+                onClick={() => setIsAddProfileModalOpen(false)}
+                style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateProfile}>
+              <div style={{ marginBottom: '1rem' }}>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#cbd5e1', marginBottom: '0.3rem' }}>
+                  Tên Hồ Sơ (Profile Name) *
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Tài Khoản Phụ (Đối Tác)"
+                  value={profileForm.profile_name}
+                  onChange={e => setProfileForm({ ...profileForm, profile_name: e.target.value })}
+                  required
+                  style={{
+                    width: '100%',
+                    background: '#090d16',
+                    border: '1px solid rgba(255, 255, 255, 0.15)',
+                    borderRadius: '6px',
+                    color: '#f8fafc',
+                    padding: '0.55rem',
+                    fontSize: '0.85rem'
+                  }}
+                />
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '1rem' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#cbd5e1', marginBottom: '0.3rem' }}>
+                    Email Đăng Nhập cTID *
+                  </label>
+                  <input
+                    type="email"
+                    placeholder="user@example.com"
+                    value={profileForm.ctid_email}
+                    onChange={e => setProfileForm({ ...profileForm, ctid_email: e.target.value.trim() })}
+                    required
+                    style={{
+                      width: '100%',
+                      background: '#090d16',
+                      border: '1px solid rgba(255, 255, 255, 0.15)',
+                      borderRadius: '6px',
+                      color: '#f8fafc',
+                      padding: '0.55rem',
+                      fontSize: '0.85rem'
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#cbd5e1', marginBottom: '0.3rem' }}>
+                    Mật Khẩu cTID *
+                  </label>
+                  <input
+                    type="password"
+                    placeholder="••••••••"
+                    value={profileForm.ctid_password}
+                    onChange={e => setProfileForm({ ...profileForm, ctid_password: e.target.value })}
+                    required
+                    style={{
+                      width: '100%',
+                      background: '#090d16',
+                      border: '1px solid rgba(255, 255, 255, 0.15)',
+                      borderRadius: '6px',
+                      color: '#f8fafc',
+                      padding: '0.55rem',
+                      fontSize: '0.85rem'
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1.25rem', background: 'rgba(15, 23, 42, 0.5)', padding: '0.75rem', borderRadius: '6px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', color: '#e2e8f0', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={profileForm.enabled}
+                    onChange={e => setProfileForm({ ...profileForm, enabled: e.target.checked })}
+                  />
+                  Kích hoạt hồ sơ này (Active)
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', color: '#38bdf8', fontWeight: 600, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={profileForm.auto_scan}
+                    onChange={e => setProfileForm({ ...profileForm, auto_scan: e.target.checked })}
+                  />
+                  Tự động quét tài khoản, balance & equity từ cTID ngay sau khi tạo
+                </label>
+              </div>
+
+              {/* Accordion Open API */}
+              <div style={{ marginBottom: '1.25rem', border: '1px solid rgba(255, 255, 255, 0.1)', borderRadius: '8px', overflow: 'hidden' }}>
+                <button
+                  type="button"
+                  onClick={() => setIsOpenApiAccordionOpen(!isOpenApiAccordionOpen)}
+                  style={{
+                    width: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    background: 'rgba(15, 23, 42, 0.8)',
+                    border: 'none',
+                    color: '#94a3b8',
+                    padding: '0.65rem 0.9rem',
+                    fontSize: '0.8rem',
+                    fontWeight: 600,
+                    cursor: 'pointer'
+                  }}
+                >
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: isOpenApiAccordionOpen ? '#38bdf8' : '#cbd5e1' }}>
+                    <ShieldCheck size={14} /> Cấu hình Spotware Open API (Tùy chọn)
+                  </span>
+                  {isOpenApiAccordionOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                </button>
+
+                {isOpenApiAccordionOpen && (
+                  <div style={{ padding: '0.9rem', background: '#0b1120', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.2rem' }}>Client ID</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. 35921_..."
+                          value={profileForm.open_api.client_id}
+                          onChange={e => setProfileForm({ ...profileForm, open_api: { ...profileForm.open_api, client_id: e.target.value.trim() } })}
+                          style={{ width: '100%', background: '#090d16', border: '1px solid rgba(255, 255, 255, 0.15)', borderRadius: '4px', color: '#f8fafc', padding: '0.45rem', fontSize: '0.8rem' }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.2rem' }}>Client Secret</label>
+                        <input
+                          type="password"
+                          placeholder="••••••••"
+                          value={profileForm.open_api.client_secret}
+                          onChange={e => setProfileForm({ ...profileForm, open_api: { ...profileForm.open_api, client_secret: e.target.value.trim() } })}
+                          style={{ width: '100%', background: '#090d16', border: '1px solid rgba(255, 255, 255, 0.15)', borderRadius: '4px', color: '#f8fafc', padding: '0.45rem', fontSize: '0.8rem' }}
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.2rem' }}>Access Token</label>
+                      <input
+                        type="password"
+                        placeholder="Token từ Spotware Playground..."
+                        value={profileForm.open_api.access_token}
+                        onChange={e => setProfileForm({ ...profileForm, open_api: { ...profileForm.open_api, access_token: e.target.value.trim() } })}
+                        style={{ width: '100%', background: '#090d16', border: '1px solid rgba(255, 255, 255, 0.15)', borderRadius: '4px', color: '#f8fafc', padding: '0.45rem', fontSize: '0.8rem' }}
+                      />
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.2rem' }}>Refresh Token</label>
+                        <input
+                          type="password"
+                          placeholder="••••••••"
+                          value={profileForm.open_api.refresh_token}
+                          onChange={e => setProfileForm({ ...profileForm, open_api: { ...profileForm.open_api, refresh_token: e.target.value.trim() } })}
+                          style={{ width: '100%', background: '#090d16', border: '1px solid rgba(255, 255, 255, 0.15)', borderRadius: '4px', color: '#f8fafc', padding: '0.45rem', fontSize: '0.8rem' }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.2rem' }}>Môi Trường</label>
+                        <select
+                          value={profileForm.open_api.environment}
+                          onChange={e => setProfileForm({ ...profileForm, open_api: { ...profileForm.open_api, environment: e.target.value } })}
+                          style={{ width: '100%', background: '#090d16', border: '1px solid rgba(255, 255, 255, 0.15)', borderRadius: '4px', color: '#f8fafc', padding: '0.45rem', fontSize: '0.8rem' }}
+                        >
+                          <option value="live">Live Broker</option>
+                          <option value="demo">Demo Sandbox</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+                <button
+                  type="button"
+                  onClick={() => setIsAddProfileModalOpen(false)}
+                  style={{
+                    background: 'transparent',
+                    border: '1px solid #475569',
+                    color: '#94a3b8',
+                    padding: '0.55rem 1rem',
+                    borderRadius: '6px',
+                    fontSize: '0.825rem',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Hủy
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingProfile}
+                  style={{
+                    background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
+                    border: 'none',
+                    color: '#ffffff',
+                    padding: '0.55rem 1.25rem',
+                    borderRadius: '6px',
+                    fontSize: '0.825rem',
+                    fontWeight: 700,
+                    cursor: submittingProfile ? 'not-allowed' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.4rem'
+                  }}
+                >
+                  {submittingProfile && <RefreshCw size={14} className="spin" />}
+                  {submittingProfile ? 'Đang tạo & Quét...' : 'Tạo Hồ Sơ cTID'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 6: CHỈNH SỬA HỒ SƠ CTID */}
+      {isEditProfileModalOpen && targetProfile && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.75)',
+          backdropFilter: 'blur(3px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 110,
+          padding: '1rem'
+        }}>
+          <div style={{
+            background: '#1e293b',
+            border: '1px solid #334155',
+            borderRadius: '12px',
+            width: '100%',
+            maxWidth: '540px',
+            maxHeight: '90vh',
+            overflowY: 'auto',
+            padding: '1.5rem',
+            boxShadow: '0 20px 40px rgba(0, 0, 0, 0.5)'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
+              <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Edit2 size={18} color="#38bdf8" /> Chỉnh Sửa Hồ Sơ cTID
+              </h3>
+              <button
+                onClick={() => setIsEditProfileModalOpen(false)}
+                style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleUpdateProfile}>
+              <div style={{ marginBottom: '1rem' }}>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#cbd5e1', marginBottom: '0.3rem' }}>
+                  Tên Hồ Sơ (Profile Name) *
+                </label>
+                <input
+                  type="text"
+                  value={profileForm.profile_name}
+                  onChange={e => setProfileForm({ ...profileForm, profile_name: e.target.value })}
+                  required
+                  style={{
+                    width: '100%',
+                    background: '#090d16',
+                    border: '1px solid rgba(255, 255, 255, 0.15)',
+                    borderRadius: '6px',
+                    color: '#f8fafc',
+                    padding: '0.55rem',
+                    fontSize: '0.85rem'
+                  }}
+                />
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '1rem' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#cbd5e1', marginBottom: '0.3rem' }}>
+                    Email Đăng Nhập cTID *
+                  </label>
+                  <input
+                    type="email"
+                    value={profileForm.ctid_email}
+                    onChange={e => setProfileForm({ ...profileForm, ctid_email: e.target.value.trim() })}
+                    required
+                    style={{
+                      width: '100%',
+                      background: '#090d16',
+                      border: '1px solid rgba(255, 255, 255, 0.15)',
+                      borderRadius: '6px',
+                      color: '#f8fafc',
+                      padding: '0.55rem',
+                      fontSize: '0.85rem'
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#cbd5e1', marginBottom: '0.3rem' }}>
+                    Mật Khẩu Mới (Tùy chọn)
+                  </label>
+                  <input
+                    type="password"
+                    placeholder="Để trống nếu giữ nguyên"
+                    value={profileForm.ctid_password}
+                    onChange={e => setProfileForm({ ...profileForm, ctid_password: e.target.value })}
+                    style={{
+                      width: '100%',
+                      background: '#090d16',
+                      border: '1px solid rgba(255, 255, 255, 0.15)',
+                      borderRadius: '6px',
+                      color: '#f8fafc',
+                      padding: '0.55rem',
+                      fontSize: '0.85rem'
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '1.25rem', background: 'rgba(15, 23, 42, 0.5)', padding: '0.75rem', borderRadius: '6px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', color: '#e2e8f0', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={profileForm.enabled}
+                    onChange={e => setProfileForm({ ...profileForm, enabled: e.target.checked })}
+                  />
+                  Kích hoạt hồ sơ này (Active)
+                </label>
+              </div>
+
+              {/* Accordion Open API */}
+              <div style={{ marginBottom: '1.25rem', border: '1px solid rgba(255, 255, 255, 0.1)', borderRadius: '8px', overflow: 'hidden' }}>
+                <button
+                  type="button"
+                  onClick={() => setIsOpenApiAccordionOpen(!isOpenApiAccordionOpen)}
+                  style={{
+                    width: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    background: 'rgba(15, 23, 42, 0.8)',
+                    border: 'none',
+                    color: '#94a3b8',
+                    padding: '0.65rem 0.9rem',
+                    fontSize: '0.8rem',
+                    fontWeight: 600,
+                    cursor: 'pointer'
+                  }}
+                >
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: isOpenApiAccordionOpen ? '#38bdf8' : '#cbd5e1' }}>
+                    <ShieldCheck size={14} /> Cấu hình Spotware Open API (Tùy chọn)
+                  </span>
+                  {isOpenApiAccordionOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                </button>
+
+                {isOpenApiAccordionOpen && (
+                  <div style={{ padding: '0.9rem', background: '#0b1120', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.2rem' }}>Client ID</label>
+                        <input
+                          type="text"
+                          placeholder="Client ID..."
+                          value={profileForm.open_api.client_id}
+                          onChange={e => setProfileForm({ ...profileForm, open_api: { ...profileForm.open_api, client_id: e.target.value.trim() } })}
+                          style={{ width: '100%', background: '#090d16', border: '1px solid rgba(255, 255, 255, 0.15)', borderRadius: '4px', color: '#f8fafc', padding: '0.45rem', fontSize: '0.8rem' }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.2rem' }}>Client Secret</label>
+                        <input
+                          type="password"
+                          placeholder="Để trống nếu giữ nguyên"
+                          value={profileForm.open_api.client_secret}
+                          onChange={e => setProfileForm({ ...profileForm, open_api: { ...profileForm.open_api, client_secret: e.target.value.trim() } })}
+                          style={{ width: '100%', background: '#090d16', border: '1px solid rgba(255, 255, 255, 0.15)', borderRadius: '4px', color: '#f8fafc', padding: '0.45rem', fontSize: '0.8rem' }}
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.2rem' }}>Access Token</label>
+                      <input
+                        type="password"
+                        placeholder="Để trống nếu giữ nguyên"
+                        value={profileForm.open_api.access_token}
+                        onChange={e => setProfileForm({ ...profileForm, open_api: { ...profileForm.open_api, access_token: e.target.value.trim() } })}
+                        style={{ width: '100%', background: '#090d16', border: '1px solid rgba(255, 255, 255, 0.15)', borderRadius: '4px', color: '#f8fafc', padding: '0.45rem', fontSize: '0.8rem' }}
+                      />
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.2rem' }}>Refresh Token</label>
+                        <input
+                          type="password"
+                          placeholder="Để trống nếu giữ nguyên"
+                          value={profileForm.open_api.refresh_token}
+                          onChange={e => setProfileForm({ ...profileForm, open_api: { ...profileForm.open_api, refresh_token: e.target.value.trim() } })}
+                          style={{ width: '100%', background: '#090d16', border: '1px solid rgba(255, 255, 255, 0.15)', borderRadius: '4px', color: '#f8fafc', padding: '0.45rem', fontSize: '0.8rem' }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.2rem' }}>Môi Trường</label>
+                        <select
+                          value={profileForm.open_api.environment}
+                          onChange={e => setProfileForm({ ...profileForm, open_api: { ...profileForm.open_api, environment: e.target.value } })}
+                          style={{ width: '100%', background: '#090d16', border: '1px solid rgba(255, 255, 255, 0.15)', borderRadius: '4px', color: '#f8fafc', padding: '0.45rem', fontSize: '0.8rem' }}
+                        >
+                          <option value="live">Live Broker</option>
+                          <option value="demo">Demo Sandbox</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+                <button
+                  type="button"
+                  onClick={() => setIsEditProfileModalOpen(false)}
+                  style={{
+                    background: 'transparent',
+                    border: '1px solid #475569',
+                    color: '#94a3b8',
+                    padding: '0.55rem 1rem',
+                    borderRadius: '6px',
+                    fontSize: '0.825rem',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Hủy
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingProfile}
+                  style={{
+                    background: '#0284c7',
+                    border: 'none',
+                    color: '#ffffff',
+                    padding: '0.55rem 1.25rem',
+                    borderRadius: '6px',
+                    fontSize: '0.825rem',
+                    fontWeight: 700,
+                    cursor: submittingProfile ? 'not-allowed' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.4rem'
+                  }}
+                >
+                  {submittingProfile && <RefreshCw size={14} className="spin" />}
+                  {submittingProfile ? 'Đang lưu...' : 'Lưu Thay Đổi'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 7: XÁC NHẬN XÓA HỒ SƠ CTID */}
+      {isDeleteProfileModalOpen && targetProfile && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.75)',
+          backdropFilter: 'blur(3px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 110,
+          padding: '1rem'
+        }}>
+          <div style={{
+            background: '#1e293b',
+            border: '1px solid rgba(239, 68, 68, 0.4)',
+            borderRadius: '12px',
+            width: '100%',
+            maxWidth: '460px',
+            padding: '1.5rem',
+            boxShadow: '0 20px 40px rgba(0, 0, 0, 0.5)'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: '#f87171', marginBottom: '1rem' }}>
+              <AlertTriangle size={24} />
+              <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: '#f8fafc' }}>
+                Xác Nhận Xóa Hồ Sơ cTID
+              </h3>
+            </div>
+
+            <p style={{ fontSize: '0.85rem', color: '#cbd5e1', lineHeight: '1.5', margin: '0 0 1rem 0' }}>
+              Bạn có chắc chắn muốn xóa hồ sơ <strong style={{ color: '#38bdf8' }}>{targetProfile.profile_name}</strong> ({targetProfile.ctid_email})?
+            </p>
+
+            <div style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.25)', borderRadius: '6px', padding: '0.75rem', marginBottom: '1.25rem', fontSize: '0.78rem', color: '#fca5a5', lineHeight: '1.4' }}>
+              ⚠️ Thao tác này sẽ xóa hồ sơ và dọn sạch <strong>{targetProfile.accounts?.length || 0}</strong> tài khoản trực thuộc khỏi cơ sở dữ liệu.
+              Nếu có bot đang chạy trên bất kỳ tài khoản nào thuộc hồ sơ này, hệ thống sẽ chặn xóa để bảo đảm an toàn.
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+              <button
+                type="button"
+                onClick={() => setIsDeleteProfileModalOpen(false)}
+                style={{
+                  background: 'transparent',
+                  border: '1px solid #475569',
+                  color: '#94a3b8',
+                  padding: '0.5rem 1rem',
+                  borderRadius: '6px',
+                  fontSize: '0.825rem',
+                  cursor: 'pointer'
+                }}
+              >
+                Hủy
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteProfile}
+                disabled={submittingProfile}
+                style={{
+                  background: '#dc2626',
+                  border: 'none',
+                  color: '#ffffff',
+                  padding: '0.5rem 1.25rem',
+                  borderRadius: '6px',
+                  fontSize: '0.825rem',
+                  fontWeight: 700,
+                  cursor: submittingProfile ? 'not-allowed' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.4rem'
+                }}
+              >
+                {submittingProfile && <RefreshCw size={14} className="spin" />}
+                {submittingProfile ? 'Đang xóa...' : 'Xác Nhận Xóa Hồ Sơ'}
               </button>
             </div>
           </div>

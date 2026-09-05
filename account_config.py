@@ -454,6 +454,206 @@ def delete_account(account_id: str) -> bool:
             print(f"[account_config] Error deleting account from DB: {ex}")
     return saved
 
+def create_profile(profile_data: Dict[str, Any]) -> Tuple[bool, str, Optional[str]]:
+    """
+    Creates a new cTID profile in ctrader_accounts.json.
+    """
+    profile_name = str(profile_data.get("profile_name", "")).strip()
+    ctid_email = str(profile_data.get("ctid_email", "")).strip()
+    ctid_password = str(profile_data.get("ctid_password", "")).strip()
+
+    if not profile_name:
+        return False, "Tên hồ sơ (Profile Name) không được để trống.", None
+    if not ctid_email:
+        return False, "Email cTID không được để trống.", None
+    if not ctid_password:
+        return False, "Mật khẩu cTID không được để trống.", None
+
+    cfg = load_accounts_config()
+    profiles = cfg.setdefault("profiles", [])
+
+    # Check for duplicate email
+    for p in profiles:
+        if (p.get("ctid_email") or "").strip().lower() == ctid_email.lower():
+            return False, f"Email cTID '{ctid_email}' đã tồn tại trong hồ sơ '{p.get('profile_name')}'.", None
+
+    # Generate unique profile_id
+    base_id = re.sub(r'[^a-zA-Z0-9_]', '', profile_name.lower().replace(" ", "_"))
+    if not base_id:
+        base_id = "profile"
+    profile_id = f"profile_{base_id}"
+    
+    # Ensure uniqueness
+    existing_ids = {p.get("id") for p in profiles}
+    if profile_id in existing_ids:
+        counter = 1
+        while f"{profile_id}_{counter}" in existing_ids:
+            counter += 1
+        profile_id = f"{profile_id}_{counter}"
+
+    # Extract open_api if provided
+    raw_oa = profile_data.get("open_api") or {}
+    open_api = {
+        "client_id": str(raw_oa.get("client_id", "")).strip(),
+        "client_secret": str(raw_oa.get("client_secret", "")).strip(),
+        "access_token": str(raw_oa.get("access_token", "")).strip(),
+        "refresh_token": str(raw_oa.get("refresh_token", "")).strip(),
+        "environment": str(raw_oa.get("environment", "live")).strip().lower() or "live",
+        "redirect_uri": str(raw_oa.get("redirect_uri", "https://openapi.ctrader.com/apps/token")).strip()
+    }
+
+    new_profile = {
+        "id": profile_id,
+        "profile_name": profile_name,
+        "enabled": profile_data.get("enabled", True) is not False,
+        "ctid_email": ctid_email,
+        "ctid_password": ctid_password,
+        "open_api": open_api,
+        "accounts": []
+    }
+
+    profiles.append(new_profile)
+    saved = save_accounts_config(cfg)
+    if saved:
+        return True, f"Tạo hồ sơ '{profile_name}' thành công.", profile_id
+    return False, "Lỗi khi lưu cấu hình hồ sơ.", None
+
+def update_profile(profile_id: str, profile_data: Dict[str, Any]) -> Tuple[bool, str]:
+    """
+    Updates an existing cTID profile. Preserves password and secrets if omitted.
+    """
+    cfg = load_accounts_config()
+    target = None
+    for p in cfg.get("profiles", []):
+        if p.get("id") == profile_id:
+            target = p
+            break
+
+    if not target:
+        return False, f"Không tìm thấy hồ sơ '{profile_id}'."
+
+    # Update profile_name if provided
+    if "profile_name" in profile_data:
+        p_name = str(profile_data["profile_name"]).strip()
+        if p_name:
+            target["profile_name"] = p_name
+
+    # Update enabled status
+    if "enabled" in profile_data:
+        target["enabled"] = profile_data["enabled"] is not False
+
+    # Update email
+    if "ctid_email" in profile_data:
+        email = str(profile_data["ctid_email"]).strip()
+        if email:
+            # Check duplicate email in other profiles
+            for other in cfg.get("profiles", []):
+                if other.get("id") != profile_id and (other.get("ctid_email") or "").strip().lower() == email.lower():
+                    return False, f"Email '{email}' đã được sử dụng bởi hồ sơ '{other.get('profile_name')}'."
+            target["ctid_email"] = email
+
+    # Update password if not masked / not empty
+    pwd = str(profile_data.get("ctid_password") or "").strip()
+    if pwd and "••" not in pwd:
+        target["ctid_password"] = pwd
+
+    # Update Open API
+    if "open_api" in profile_data and isinstance(profile_data["open_api"], dict):
+        oa_in = profile_data["open_api"]
+        oa_existing = target.setdefault("open_api", {})
+
+        if "client_id" in oa_in:
+            oa_existing["client_id"] = str(oa_in["client_id"]).strip()
+        
+        c_secret = str(oa_in.get("client_secret") or "").strip()
+        if c_secret and "••" not in c_secret:
+            oa_existing["client_secret"] = c_secret
+
+        a_token = str(oa_in.get("access_token") or "").strip()
+        if a_token and "••" not in a_token and "..." not in a_token:
+            oa_existing["access_token"] = a_token
+
+        r_token = str(oa_in.get("refresh_token") or "").strip()
+        if r_token and "••" not in r_token:
+            oa_existing["refresh_token"] = r_token
+
+        if "environment" in oa_in:
+            env = str(oa_in["environment"]).strip().lower()
+            if env in ("live", "demo"):
+                oa_existing["environment"] = env
+
+        if "redirect_uri" in oa_in and oa_in["redirect_uri"]:
+            oa_existing["redirect_uri"] = str(oa_in["redirect_uri"]).strip()
+
+    saved = save_accounts_config(cfg)
+    if saved:
+        sync_accounts_to_database()
+        return True, f"Cập nhật hồ sơ '{target.get('profile_name')}' thành công."
+    return False, "Lỗi khi lưu cấu hình hồ sơ."
+
+def delete_profile(profile_id: str, force: bool = False) -> Tuple[bool, str]:
+    """
+    Deletes a cTID profile and cleans up associated accounts from SQLite.
+    Blocks deletion if any bot is currently RUNNING or STARTING on any account in this profile.
+    """
+    cfg = load_accounts_config()
+    target = None
+    target_idx = -1
+    for idx, p in enumerate(cfg.get("profiles", [])):
+        if p.get("id") == profile_id:
+            target = p
+            target_idx = idx
+            break
+
+    if not target or target_idx == -1:
+        return False, f"Không tìm thấy hồ sơ '{profile_id}'."
+
+    acc_ids = [str(a.get("account_id", "")).strip() for a in target.get("accounts", []) if a.get("account_id")]
+
+    # Check for active running bots
+    if acc_ids and not force:
+        db_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "portfolio.db"))
+        try:
+            conn = sqlite3.connect(db_path)
+            c = conn.cursor()
+            placeholders = ",".join("?" * len(acc_ids))
+            c.execute(f"""
+                SELECT COUNT(*), GROUP_CONCAT(bot_id)
+                FROM bot_instances
+                WHERE account_id IN ({placeholders}) AND status IN ('RUNNING', 'STARTING')
+            """, acc_ids)
+            row = c.fetchone()
+            running_count = row[0] if row else 0
+            running_bots = row[1] if row and row[1] else ""
+            conn.close()
+
+            if running_count > 0:
+                return False, f"Không thể xóa hồ sơ '{target.get('profile_name')}': Có {running_count} bot đang hoạt động ({running_bots}) trên tài khoản thuộc hồ sơ này. Vui lòng dừng bot trước khi xóa."
+        except Exception as ex:
+            print(f"[account_config] Error checking running bots: {ex}")
+
+    # Remove profile from config
+    cfg["profiles"].pop(target_idx)
+    saved = save_accounts_config(cfg)
+    if not saved:
+        return False, "Lỗi khi ghi file cấu hình sau khi xóa hồ sơ."
+
+    # Remove associated accounts from SQLite accounts table
+    if acc_ids:
+        db_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "portfolio.db"))
+        try:
+            conn = sqlite3.connect(db_path)
+            c = conn.cursor()
+            placeholders = ",".join("?" * len(acc_ids))
+            c.execute(f"DELETE FROM accounts WHERE account_id IN ({placeholders})", acc_ids)
+            conn.commit()
+            conn.close()
+        except Exception as ex:
+            print(f"[account_config] Error deleting accounts from DB: {ex}")
+
+    return True, f"Đã xóa hồ sơ '{target.get('profile_name')}' và {len(acc_ids)} tài khoản liên quan."
+
+
 def get_raw_json_config() -> str:
     """
     Returns raw JSON string of ctrader_accounts.json.
