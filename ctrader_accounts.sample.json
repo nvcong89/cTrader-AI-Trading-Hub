@@ -45,7 +45,11 @@
           "account_label": "FxPro Main Live ($683)",
           "broker": "FxPro",
           "account_type": "live",
-          "currency": "USD"
+          "currency": "USD",
+          "leverage": 1000,
+          "balance": 0.0,
+          "equity": 683.87,
+          "enabled": true
         },
         {
           "account_id": "8237659",
@@ -53,7 +57,11 @@
           "account_label": "FxPro Sub 1",
           "broker": "FxPro",
           "account_type": "live",
-          "currency": "USD"
+          "currency": "USD",
+          "leverage": 1000,
+          "balance": 0.0,
+          "equity": 0.0,
+          "enabled": true
         }
       ]
     }

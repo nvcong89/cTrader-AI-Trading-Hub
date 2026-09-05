@@ -8,6 +8,7 @@ import json
 import os
 import sqlite3
 import datetime
+import re
 from typing import Dict, Any, List, Optional, Tuple
 
 CONFIG_FILENAME = "ctrader_accounts.json"
@@ -300,20 +301,26 @@ def sync_accounts_to_database(conn: Optional[sqlite3.Connection] = None) -> int:
             ctid_email = acc.get("ctid_email", "")
             profile_id = acc.get("profile_id", "")
 
+            acc_balance = float(acc.get("balance", 0.0) or 0.0)
+            acc_equity = float(acc.get("equity", acc_balance) or 0.0)
+
             # Check if account already exists
             c.execute("SELECT account_id, balance, equity FROM accounts WHERE account_id = ?", (acc_id,))
             existing = c.fetchone()
             if existing:
                 c.execute("""
                     UPDATE accounts
-                    SET account_label = ?, account_type = ?, broker = ?, currency = ?, ctid_email = ?, profile_id = ?
+                    SET account_label = ?, account_type = ?, broker = ?, currency = ?, ctid_email = ?, profile_id = ?,
+                        balance = CASE WHEN ? > 0 THEN ? ELSE balance END,
+                        equity = CASE WHEN ? > 0 THEN ? ELSE equity END,
+                        last_updated = ?
                     WHERE account_id = ?
-                """, (acc_label, acc_type, broker, currency, ctid_email, profile_id, acc_id))
+                """, (acc_label, acc_type, broker, currency, ctid_email, profile_id, acc_balance, acc_balance, acc_equity, acc_equity, now_iso, acc_id))
             else:
                 c.execute("""
                     INSERT INTO accounts (account_id, account_label, account_type, broker, currency, ctid_email, profile_id, balance, equity, last_updated)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 0.0, 0.0, ?)
-                """, (acc_id, acc_label, acc_type, broker, currency, ctid_email, profile_id, now_iso))
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (acc_id, acc_label, acc_type, broker, currency, ctid_email, profile_id, acc_balance, acc_equity, now_iso))
             synced_count += 1
         conn.commit()
     finally:
@@ -614,15 +621,19 @@ def get_account_details_with_stats(conn: Optional[sqlite3.Connection] = None) ->
             item = dict(acc)
             
             # Query SQLite for balance, equity, last_updated
+            cfg_bal = float(acc.get("balance", 0.0) or 0.0)
+            cfg_eq = float(acc.get("equity", cfg_bal) or 0.0)
             c.execute("SELECT balance, equity, last_updated FROM accounts WHERE account_id = ?", (acc_id,))
             db_row = c.fetchone()
             if db_row:
-                item["balance"] = db_row["balance"] if db_row["balance"] is not None else 0.0
-                item["equity"] = db_row["equity"] if db_row["equity"] is not None else 0.0
+                db_bal = float(db_row["balance"] or 0.0) if db_row["balance"] is not None else 0.0
+                db_eq = float(db_row["equity"] or 0.0) if db_row["equity"] is not None else 0.0
+                item["balance"] = db_bal if (db_bal > 0 or cfg_bal == 0.0) else cfg_bal
+                item["equity"] = db_eq if (db_eq > 0 or cfg_eq == 0.0) else cfg_eq
                 item["last_updated"] = db_row["last_updated"]
             else:
-                item["balance"] = 0.0
-                item["equity"] = 0.0
+                item["balance"] = cfg_bal
+                item["equity"] = cfg_eq
                 item["last_updated"] = None
 
             # Count running bots on this account
@@ -721,6 +732,56 @@ def scan_accounts_from_ctid(profile_id: str) -> Dict[str, Any]:
             if acc.get("ctid_trader_id"):
                 existing_map[str(acc.get("ctid_trader_id", "")).strip()] = acc
 
+        # Build map of accounts to query live details for
+        raw_items_map = {}
+        for item in raw_accounts:
+            acc_num = str(item.get("Number", "")).strip()
+            if acc_num:
+                raw_items_map[acc_num] = item
+
+        # Concurrently enrich accounts with live balance, equity, leverage & broker account name
+        live_details = {}
+        from concurrent.futures import ThreadPoolExecutor
+
+        def fetch_account_live_stats(acc_id_str):
+            try:
+                p_run = subprocess.run(
+                    [cli_path, "account", f"--ctid={email}", f"--pwd-file={temp_pwd_file}", f"--account={acc_id_str}", "-q"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    **kwargs
+                )
+                out = p_run.stdout
+                for m in re.finditer(r'\{[^{}]*"equity"[^{}]*\}', out, re.DOTALL):
+                    try:
+                        res = json.loads(m.group(0))
+                        return acc_id_str, res
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            return acc_id_str, None
+
+        accounts_to_query = list(raw_items_map.keys())
+        # If large fleet, prioritize existing accounts or accounts with non-zero balance
+        if len(accounts_to_query) > 12:
+            def priority_key(num):
+                m = existing_map.get(num)
+                has_bal = (raw_items_map.get(num, {}).get("Balance", 0) or 0) > 0
+                return (1 if m else 0) + (2 if has_bal else 0)
+            accounts_to_query.sort(key=priority_key, reverse=True)
+            accounts_to_query = accounts_to_query[:12]
+
+        if accounts_to_query:
+            max_workers = min(5, max(1, len(accounts_to_query)))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                query_results = list(executor.map(fetch_account_live_stats, accounts_to_query))
+
+            for acc_num, detail in query_results:
+                if detail:
+                    live_details[acc_num] = detail
+
         updated_accounts = []
         for item in raw_accounts:
             # item has: Id, Number, Broker, Live, DepositCurrency, Leverage, Balance
@@ -729,11 +790,30 @@ def scan_accounts_from_ctid(profile_id: str) -> Dict[str, Any]:
             broker = item.get("Broker", "FxPro")
             is_live = item.get("Live", False)
             currency = item.get("DepositCurrency", "USD")
+            leverage = item.get("Leverage", 1000)
+            batch_bal = float(item.get("Balance", 0.0) or 0.0)
 
             # Check if this account already had a label or settings
             match = existing_map.get(acc_num) or existing_map.get(ctid_id)
             label = match.get("account_label", "") if match else ""
             enabled = match.get("enabled", True) if match else True
+
+            # Live detail stats
+            detail = live_details.get(acc_num)
+            if detail:
+                final_balance = float(detail.get("balance", batch_bal) or 0.0)
+                final_equity = float(detail.get("equity", final_balance) or 0.0)
+                if detail.get("leverage"):
+                    try:
+                        leverage = int(detail["leverage"])
+                    except Exception:
+                        pass
+                broker_acc_name = str(detail.get("accountName") or "").strip()
+                if not label and broker_acc_name:
+                    label = broker_acc_name
+            else:
+                final_balance = batch_bal
+                final_equity = float(match.get("equity", final_balance) or final_balance) if match else final_balance
 
             updated_accounts.append({
                 "account_id": acc_num,
@@ -742,6 +822,9 @@ def scan_accounts_from_ctid(profile_id: str) -> Dict[str, Any]:
                 "broker": broker,
                 "account_type": "live" if is_live else "demo",
                 "currency": currency,
+                "leverage": leverage,
+                "balance": final_balance,
+                "equity": final_equity,
                 "enabled": enabled
             })
 

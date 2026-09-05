@@ -38,17 +38,17 @@ def test_load_accounts_config():
 
 def test_get_profile_by_account():
     # Account from Profile 1
-    p1 = get_profile_by_account("46477582")
+    p1 = get_profile_by_account("10645192")
     assert p1 is not None
     assert p1["id"] == "profile_main"
     
     # Account from Profile 2 (by account_id)
-    p2_acc1 = get_profile_by_account("8246991")
+    p2_acc1 = get_profile_by_account("8240138")
     assert p2_acc1 is not None
     assert p2_acc1["id"] == "profile_hoaithanh"
     
     # Account from Profile 2 (by ctid_trader_id)
-    p2_acc2 = get_profile_by_account("45691217")
+    p2_acc2 = get_profile_by_account("45261297")
     assert p2_acc2 is not None
     assert p2_acc2["id"] == "profile_hoaithanh"
     
@@ -58,25 +58,25 @@ def test_get_profile_by_account():
 
 def test_get_cli_credentials_for_account():
     # Profile 1
-    email1, pwd1 = get_cli_credentials_for_account("46477582")
+    email1, pwd1 = get_cli_credentials_for_account("10645192")
     assert email1 == "nvcong89@live.com"
     assert pwd1 == "Th@nhcong89"
     
     # Profile 2
-    email2, pwd2 = get_cli_credentials_for_account("8246991")
+    email2, pwd2 = get_cli_credentials_for_account("8240138")
     assert email2 == "hoaithanh169nb@gmail.com"
     assert pwd2 == "Khanhlinh2023"
 
 def test_get_open_api_credentials_for_account():
     # Profile 1 has full open_api credentials
-    oa1 = get_open_api_credentials_for_account("46477582")
+    oa1 = get_open_api_credentials_for_account("10645192")
     assert oa1 is not None
     assert "35921" in oa1["client_id"]
     assert oa1["access_token"].startswith("4o_PS")
     assert oa1["environment"] == "live"
     
     # Profile 2 does not have active Open API token yet
-    oa2 = get_open_api_credentials_for_account("8246991")
+    oa2 = get_open_api_credentials_for_account("8240138")
     # Should be None since access_token is empty
     assert oa2 is None
 
@@ -85,8 +85,8 @@ def test_get_all_configured_accounts():
     assert len(accounts) >= 6
     
     acc_ids = [a["account_id"] for a in accounts]
-    assert "46477582" in acc_ids
-    assert "8246991" in acc_ids
+    assert "10645192" in acc_ids
+    assert "8240138" in acc_ids
     assert "8237659" in acc_ids
     
     for a in accounts:
@@ -128,3 +128,14 @@ def test_fallback_config_structure():
     assert "profiles" in fallback
     assert len(fallback["profiles"]) == 1
     assert fallback["profiles"][0]["id"] == "profile_default"
+
+def test_account_details_with_stats_has_balance_equity():
+    from account_config import get_account_details_with_stats
+    stats = get_account_details_with_stats()
+    assert len(stats) >= 5
+    for s in stats:
+        assert "balance" in s
+        assert "equity" in s
+        assert isinstance(s["balance"], (int, float))
+        assert isinstance(s["equity"], (int, float))
+

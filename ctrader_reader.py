@@ -62,6 +62,17 @@ def parse_cli_output(stdout, stderr):
                     if k == "positions": data["success"] = True
         except Exception:
             pass
+
+    # Also capture raw account JSON object containing equity / balance
+    if not data.get("account"):
+        for m in re.finditer(r'\{[^{}]*"equity"[^{}]*\}', stdout, re.DOTALL):
+            try:
+                acc_obj = json.loads(m.group(0))
+                data["account"] = acc_obj
+                break
+            except Exception:
+                pass
+
     return data
 
 def sync_ctrader_broker_positions():
@@ -214,6 +225,18 @@ def sync_ctrader_broker_positions():
 
             synced_positions_total += 1
         synced_orders_total += len(cli_orders)
+
+        # Also sync account balance and equity into accounts table if captured
+        cli_account = broker_data.get("account", {})
+        if cli_account and ("balance" in cli_account or "equity" in cli_account):
+            now_iso = datetime.datetime.now().isoformat()
+            acc_bal = float(cli_account.get("balance", 0.0) or 0.0)
+            acc_eq = float(cli_account.get("equity", acc_bal) or 0.0)
+            c.execute("""
+                UPDATE accounts
+                SET balance = ?, equity = ?, last_updated = ?
+                WHERE account_id = ?
+            """, (acc_bal, acc_eq, now_iso, account_id))
 
         conn.commit()
         conn.close()
