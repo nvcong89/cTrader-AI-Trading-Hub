@@ -1531,6 +1531,96 @@ async def reload_accounts(request: Request):
         "accounts": get_all_configured_accounts(enabled_only=True)
     }
 
+@app.get("/api/accounts/full-list")
+async def get_accounts_full_list(request: Request):
+    require_admin(request)
+    from account_config import get_account_details_with_stats, get_all_profiles, sanitize_profiles_for_api
+    accounts = get_account_details_with_stats()
+    profiles = sanitize_profiles_for_api(get_all_profiles())
+    return {
+        "accounts": accounts,
+        "profiles": profiles
+    }
+
+class RawConfigPayload(BaseModel):
+    raw_json: str
+
+@app.get("/api/accounts/raw-config")
+async def get_raw_accounts_config(request: Request):
+    require_admin(request)
+    from account_config import get_raw_json_config
+    return {"raw_json": get_raw_json_config()}
+
+@app.put("/api/accounts/raw-config")
+async def update_raw_accounts_config(payload: RawConfigPayload, request: Request):
+    require_admin(request)
+    from account_config import save_raw_json_config
+    success, msg_str = save_raw_json_config(payload.raw_json)
+    if not success:
+        raise HTTPException(status_code=400, detail=msg_str)
+    return {"status": "success", "message": msg_str}
+
+@app.post("/api/accounts/profiles/{profile_id}/test-connection")
+async def test_profile_connection(profile_id: str, request: Request):
+    require_admin(request)
+    from account_config import test_profile_open_api_connection
+    result = await test_profile_open_api_connection(profile_id)
+    return result
+
+@app.post("/api/accounts/profiles/{profile_id}/refresh-token")
+async def refresh_profile_token(profile_id: str, request: Request):
+    require_admin(request)
+    from account_config import refresh_profile_open_api_token
+    result = refresh_profile_open_api_token(profile_id)
+    if result.get("status") != "success":
+        raise HTTPException(status_code=400, detail=result.get("message", "Token refresh failed"))
+    return result
+
+class CreateAccountPayload(BaseModel):
+    profile_id: str
+    account_id: str
+    account_label: Optional[str] = None
+    broker: Optional[str] = "FxPro"
+    account_type: Optional[str] = "demo"
+    currency: Optional[str] = "USD"
+    enabled: Optional[bool] = True
+    ctid_trader_id: Optional[str] = None
+
+@app.post("/api/accounts")
+async def create_new_account(payload: CreateAccountPayload, request: Request):
+    require_admin(request)
+    from account_config import add_account_to_profile
+    success, msg_str = add_account_to_profile(payload.profile_id, payload.dict())
+    if not success:
+        raise HTTPException(status_code=400, detail=msg_str)
+    return {"status": "success", "message": msg_str}
+
+class UpdateAccountPayload(BaseModel):
+    account_label: Optional[str] = None
+    broker: Optional[str] = None
+    account_type: Optional[str] = None
+    currency: Optional[str] = None
+    enabled: Optional[bool] = None
+
+@app.put("/api/accounts/{account_id}")
+async def update_account_endpoint(account_id: str, payload: UpdateAccountPayload, request: Request):
+    require_admin(request)
+    from account_config import update_account_info
+    updates = {k: v for k, v in payload.dict().items() if v is not None}
+    success = update_account_info(account_id, updates)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Account '{account_id}' not found.")
+    return {"status": "success", "message": f"Account '{account_id}' updated successfully."}
+
+@app.delete("/api/accounts/{account_id}")
+async def delete_account_endpoint(account_id: str, request: Request):
+    require_admin(request)
+    from account_config import delete_account
+    success = delete_account(account_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Account '{account_id}' not found.")
+    return {"status": "success", "message": f"Account '{account_id}' deleted successfully."}
+
 @app.get("/api/dashboard")
 async def dashboard_view(request: Request):
     get_current_user(request)

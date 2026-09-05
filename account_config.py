@@ -339,3 +339,305 @@ def sanitize_profiles_for_api(profiles: List[Dict[str, Any]]) -> List[Dict[str, 
             p_copy["open_api"] = oa_copy
         sanitized.append(p_copy)
     return sanitized
+
+def update_account_info(account_id: str, updates: Dict[str, Any]) -> bool:
+    """
+    Updates metadata for an account in ctrader_accounts.json and syncs to SQLite.
+    Allowed update fields: account_label, broker, account_type, currency, enabled.
+    """
+    acc_str = str(account_id).strip()
+    cfg = load_accounts_config()
+    found = False
+
+    for p in cfg.get("profiles", []):
+        for acc in p.get("accounts", []):
+            if str(acc.get("account_id", "")).strip() == acc_str:
+                for key in ["account_label", "broker", "account_type", "currency", "enabled"]:
+                    if key in updates:
+                        acc[key] = updates[key]
+                found = True
+                break
+        if found:
+            break
+
+    if not found:
+        return False
+
+    saved = save_accounts_config(cfg)
+    if saved:
+        sync_accounts_to_database()
+    return saved
+
+def add_account_to_profile(profile_id: str, account_data: Dict[str, Any]) -> Tuple[bool, str]:
+    """
+    Adds a new trading account to a specified profile.
+    """
+    acc_id = str(account_data.get("account_id", "")).strip()
+    if not acc_id:
+        return False, "Account ID cannot be empty."
+
+    cfg = load_accounts_config()
+    
+    # Check if account_id already exists anywhere
+    for p in cfg.get("profiles", []):
+        for acc in p.get("accounts", []):
+            if str(acc.get("account_id", "")).strip() == acc_id:
+                return False, f"Account ID {acc_id} already exists in profile '{p.get('profile_name')}'."
+
+    target_profile = None
+    for p in cfg.get("profiles", []):
+        if p.get("id") == profile_id:
+            target_profile = p
+            break
+
+    if not target_profile:
+        return False, f"Profile ID '{profile_id}' not found."
+
+    if "accounts" not in target_profile:
+        target_profile["accounts"] = []
+
+    new_acc = {
+        "account_id": acc_id,
+        "account_label": account_data.get("account_label") or f"Account #{acc_id}",
+        "broker": account_data.get("broker", "FxPro"),
+        "account_type": account_data.get("account_type", "demo").lower(),
+        "currency": account_data.get("currency", "USD"),
+        "enabled": account_data.get("enabled", True)
+    }
+    if "ctid_trader_id" in account_data and account_data["ctid_trader_id"]:
+        new_acc["ctid_trader_id"] = str(account_data["ctid_trader_id"]).strip()
+
+    target_profile["accounts"].append(new_acc)
+    saved = save_accounts_config(cfg)
+    if saved:
+        sync_accounts_to_database()
+        return True, "Account successfully added."
+    return False, "Failed to save configuration."
+
+def delete_account(account_id: str) -> bool:
+    """
+    Removes an account from ctrader_accounts.json and deletes it from SQLite accounts table.
+    """
+    acc_str = str(account_id).strip()
+    cfg = load_accounts_config()
+    found = False
+
+    for p in cfg.get("profiles", []):
+        accounts = p.get("accounts", [])
+        new_accounts = [acc for acc in accounts if str(acc.get("account_id", "")).strip() != acc_str]
+        if len(new_accounts) < len(accounts):
+            p["accounts"] = new_accounts
+            found = True
+            break
+
+    if not found:
+        return False
+
+    saved = save_accounts_config(cfg)
+    if saved:
+        # Also remove from SQLite accounts table
+        db_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "portfolio.db"))
+        try:
+            conn = sqlite3.connect(db_path)
+            c = conn.cursor()
+            c.execute("DELETE FROM accounts WHERE account_id = ?", (acc_str,))
+            conn.commit()
+            conn.close()
+        except Exception as ex:
+            print(f"[account_config] Error deleting account from DB: {ex}")
+    return saved
+
+def get_raw_json_config() -> str:
+    """
+    Returns raw JSON string of ctrader_accounts.json.
+    """
+    config_path = get_config_path()
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception as e:
+            print(f"[account_config] Error reading raw JSON: {e}")
+    
+    # Return formatted fallback config
+    return json.dumps(load_accounts_config(), indent=2, ensure_ascii=False)
+
+def save_raw_json_config(raw_json_str: str) -> Tuple[bool, str]:
+    """
+    Validates and saves a raw JSON string into ctrader_accounts.json.
+    """
+    try:
+        data = json.loads(raw_json_str)
+    except json.JSONDecodeError as ex:
+        return False, f"JSON Syntax Error: {ex}"
+
+    if not isinstance(data, dict) or "profiles" not in data or not isinstance(data["profiles"], list):
+        return False, "Invalid format: Root object must contain a 'profiles' list."
+
+    saved = save_accounts_config(data)
+    if saved:
+        synced = sync_accounts_to_database()
+        return True, f"Configuration saved and {synced} accounts synced to database."
+    return False, "Failed to write configuration file."
+
+def refresh_profile_open_api_token(profile_id: str) -> Dict[str, Any]:
+    """
+    Refreshes the OAuth2 Access Token for a profile using Spotware Open API.
+    """
+    profile = get_profile_by_id(profile_id)
+    if not profile:
+        return {"status": "error", "message": f"Profile '{profile_id}' not found."}
+
+    oa = profile.get("open_api") or {}
+    client_id = oa.get("client_id", "").strip()
+    client_secret = oa.get("client_secret", "").strip()
+    refresh_token = oa.get("refresh_token", "").strip()
+    redirect_uri = oa.get("redirect_uri", "https://openapi.ctrader.com/apps/token").strip()
+
+    if not client_id or not client_secret:
+        return {"status": "error", "message": "Missing client_id or client_secret for this profile."}
+    if not refresh_token:
+        return {"status": "error", "message": "No refresh_token found for this profile. Please configure refresh_token first."}
+
+    try:
+        from ctrader_open_api.auth import Auth
+        auth = Auth(client_id, client_secret, redirect_uri)
+        res = auth.refreshToken(refresh_token)
+
+        if not isinstance(res, dict):
+            return {"status": "error", "message": f"Unexpected response from cTrader: {res}"}
+
+        if "accessToken" in res:
+            new_access_token = res["accessToken"]
+            new_refresh_token = res.get("refreshToken", refresh_token)
+            expires_in = res.get("expiresIn", 2592000)
+
+            # Update profile in ctrader_accounts.json
+            cfg = load_accounts_config()
+            for p in cfg.get("profiles", []):
+                if p.get("id") == profile_id:
+                    if "open_api" not in p:
+                        p["open_api"] = {}
+                    p["open_api"]["access_token"] = new_access_token
+                    p["open_api"]["refresh_token"] = new_refresh_token
+                    p["open_api"]["last_refreshed"] = datetime.datetime.now().isoformat()
+                    break
+            save_accounts_config(cfg)
+
+            return {
+                "status": "success",
+                "message": "Token refreshed successfully.",
+                "expires_in": expires_in,
+                "access_token_masked": new_access_token[:6] + "..." + new_access_token[-4:]
+            }
+        else:
+            err_code = res.get("errorCode", "UNKNOWN_ERROR")
+            err_desc = res.get("errorDescription", res.get("description", str(res)))
+            return {"status": "error", "message": f"cTrader Open API Error: {err_code} - {err_desc}"}
+
+    except Exception as ex:
+        return {"status": "error", "message": f"Token refresh exception: {ex}"}
+
+async def test_profile_open_api_connection(profile_id: str) -> Dict[str, Any]:
+    """
+    Tests Open API connectivity and credentials validity for a specific profile.
+    """
+    profile = get_profile_by_id(profile_id)
+    if not profile:
+        return {"status": "error", "message": f"Profile '{profile_id}' not found."}
+
+    oa = profile.get("open_api") or {}
+    client_id = oa.get("client_id", "").strip()
+    client_secret = oa.get("client_secret", "").strip()
+    access_token = oa.get("access_token", "").strip()
+    environment = oa.get("environment", "demo").lower().strip()
+
+    if not client_id or not client_secret:
+        return {"status": "error", "message": "Missing client_id or client_secret."}
+    if not access_token:
+        return {"status": "error", "message": "Missing access_token."}
+
+    from ctrader_open_api_client import CTraderOpenAPIClient
+    client = CTraderOpenAPIClient(environment=environment, timeout=10.0)
+    try:
+        t0 = datetime.datetime.now()
+        await client.connect(max_retries=2)
+        await client.authorize_application(client_id, client_secret)
+        raw_accounts = await client.get_accounts_by_access_token(access_token)
+        latency_ms = int((datetime.datetime.now() - t0).total_seconds() * 1000)
+
+        accounts_summary = []
+        for acc in raw_accounts:
+            accounts_summary.append({
+                "ctidTraderAccountId": getattr(acc, "ctidTraderAccountId", None),
+                "isLive": getattr(acc, "isLive", False),
+                "traderLogin": getattr(acc, "traderLogin", None)
+            })
+
+        return {
+            "status": "success",
+            "connected": True,
+            "latency_ms": latency_ms,
+            "environment": environment,
+            "account_count": len(accounts_summary),
+            "accounts": accounts_summary
+        }
+    except Exception as ex:
+        return {
+            "status": "error",
+            "connected": False,
+            "message": str(ex)
+        }
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+def get_account_details_with_stats(conn: Optional[sqlite3.Connection] = None) -> List[Dict[str, Any]]:
+    """
+    Returns full account list merged with runtime balance, equity, and active bot counts.
+    """
+    accounts = get_all_configured_accounts(enabled_only=False)
+    should_close = False
+    if conn is None:
+        db_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "portfolio.db"))
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        should_close = True
+
+    results = []
+    try:
+        c = conn.cursor()
+        for acc in accounts:
+            acc_id = str(acc.get("account_id", "")).strip()
+            item = dict(acc)
+            
+            # Query SQLite for balance, equity, last_updated
+            c.execute("SELECT balance, equity, last_updated FROM accounts WHERE account_id = ?", (acc_id,))
+            db_row = c.fetchone()
+            if db_row:
+                item["balance"] = db_row["balance"] if db_row["balance"] is not None else 0.0
+                item["equity"] = db_row["equity"] if db_row["equity"] is not None else 0.0
+                item["last_updated"] = db_row["last_updated"]
+            else:
+                item["balance"] = 0.0
+                item["equity"] = 0.0
+                item["last_updated"] = None
+
+            # Count running bots on this account
+            c.execute("SELECT COUNT(*) FROM bot_instances WHERE account_id = ? AND status IN ('RUNNING', 'STARTING')", (acc_id,))
+            running_count = c.fetchone()[0]
+            item["running_bots"] = running_count
+
+            # Total bots configured on this account
+            c.execute("SELECT COUNT(*) FROM bot_instances WHERE account_id = ?", (acc_id,))
+            total_count = c.fetchone()[0]
+            item["total_bots"] = total_count
+
+            results.append(item)
+    finally:
+        if should_close:
+            conn.close()
+
+    return results

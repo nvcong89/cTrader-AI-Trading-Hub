@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { Activity, Bot, Cpu, History, LogOut, Menu, TerminalSquare, X, Zap, Award, ShieldCheck, Eye, RefreshCw, Wifi, Gauge, CheckCircle2, AlertTriangle, ArrowRight, BrainCircuit } from 'lucide-react';
+import { Activity, Bot, Cpu, History, LogOut, Menu, TerminalSquare, X, Zap, Award, ShieldCheck, Eye, RefreshCw, Wifi, Gauge, CheckCircle2, AlertTriangle, ArrowRight, BrainCircuit, Wallet } from 'lucide-react';
 import { getApiBaseUrl } from './config';
 import OverviewTab from './components/OverviewTab';
 import ActivePositionsTab from './components/ActivePositionsTab';
@@ -10,9 +10,10 @@ import AgentTab from './components/AgentTab';
 import AIBenchmarkTab from './components/AIBenchmarkTab';
 import StrategyAuditTab from './components/StrategyAuditTab';
 import TradeHistoryTab from './components/TradeHistoryTab';
+import AccountManagerTab from './components/AccountManagerTab';
 import SystemLogsTab from './components/SystemLogsTab';
 
-type TabType = 'overview' | 'positions' | 'bots' | 'agent' | 'benchmark' | 'audit' | 'history' | 'logs';
+type TabType = 'overview' | 'positions' | 'bots' | 'agent' | 'benchmark' | 'audit' | 'history' | 'accounts' | 'logs';
 
 export default function Dashboard() {
   const getInitialDashboardData = () => {
@@ -68,7 +69,7 @@ export default function Dashboard() {
 
   const getInitialTab = (): TabType => {
     const hash = window.location.hash.replace('#', '') as TabType;
-    const validTabs: TabType[] = ['overview', 'positions', 'bots', 'agent', 'benchmark', 'audit', 'history', 'logs'];
+    const validTabs: TabType[] = ['overview', 'positions', 'bots', 'agent', 'benchmark', 'audit', 'history', 'accounts', 'logs'];
     if (validTabs.includes(hash)) {
       return hash;
     }
@@ -83,6 +84,9 @@ export default function Dashboard() {
   const navigate = useNavigate();
 
   const handleTabChange = (tab: TabType) => {
+    if (userRole === 'guest' && tab === 'accounts') {
+      tab = 'overview';
+    }
     setActiveTab(tab);
     localStorage.setItem('agent_hub_active_tab', tab);
     window.location.hash = tab;
@@ -108,6 +112,9 @@ export default function Dashboard() {
       const res = await axios.get(`${getApiBaseUrl()}/api/auth/me`, { withCredentials: true, timeout: 5000 });
       if (res.data?.role) {
         setUserRole(res.data.role);
+        if (res.data.role === 'guest' && activeTab === 'accounts') {
+          handleTabChange('overview');
+        }
       }
       if (res.data?.user) {
         setUserName(res.data.user);
@@ -267,6 +274,8 @@ export default function Dashboard() {
         return <StrategyAuditTab isGuest={isGuest} />;
       case 'history':
         return <TradeHistoryTab isGuest={isGuest} />;
+      case 'accounts':
+        return !isGuest ? <AccountManagerTab isGuest={isGuest} onNavigateToBots={() => handleTabChange('bots')} /> : <OverviewTab data={data} />;
       case 'logs':
         return <SystemLogsTab isGuest={isGuest} />;
       default:
@@ -572,6 +581,14 @@ export default function Dashboard() {
           >
             <History size={18} color={activeTab === 'history' ? '#38bdf8' : 'currentColor'} /> Trade History
           </button>
+          {!isGuest && (
+            <button 
+              onClick={() => handleTabChange('accounts')} 
+              style={{ color: activeTab === 'accounts' ? 'white' : '#94a3b8', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.85rem 0.75rem', background: activeTab === 'accounts' ? '#334155' : 'transparent', borderRadius: '6px', border: 'none', cursor: 'pointer', textAlign: 'left', fontSize: '1rem', fontWeight: 600, minHeight: '44px' }}
+            >
+              <Wallet size={18} color={activeTab === 'accounts' ? '#38bdf8' : 'currentColor'} /> Account Manager
+            </button>
+          )}
           <button 
             onClick={() => handleTabChange('logs')} 
             style={{ color: activeTab === 'logs' ? 'white' : '#94a3b8', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.85rem 0.75rem', background: activeTab === 'logs' ? '#334155' : 'transparent', borderRadius: '6px', border: 'none', cursor: 'pointer', textAlign: 'left', fontSize: '1rem', fontWeight: 600, minHeight: '44px' }}
