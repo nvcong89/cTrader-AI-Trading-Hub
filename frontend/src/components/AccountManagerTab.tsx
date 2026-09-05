@@ -16,7 +16,8 @@ import {
   X,
   Radio,
   Layers,
-  Sparkles
+  Sparkles,
+  Download
 } from 'lucide-react';
 
 interface AccountItem {
@@ -76,6 +77,7 @@ export default function AccountManagerTab({ isGuest: _isGuest = false, onNavigat
   // Test & Refresh Token State
   const [testingProfileId, setTestingProfileId] = useState<string | null>(null);
   const [refreshingProfileId, setRefreshingProfileId] = useState<string | null>(null);
+  const [scanningProfileId, setScanningProfileId] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<{ [profileId: string]: any }>({});
 
   // Modals
@@ -176,6 +178,20 @@ export default function AccountManagerTab({ isGuest: _isGuest = false, onNavigat
       setActionMessage({ type: 'error', text: msg });
     } finally {
       setRefreshingProfileId(null);
+    }
+  };
+
+  const handleScanAccounts = async (profileId: string) => {
+    try {
+      setScanningProfileId(profileId);
+      const res = await axios.post(`${getApiBaseUrl()}/api/accounts/profiles/${profileId}/scan-accounts`, {}, { withCredentials: true });
+      setActionMessage({ type: 'success', text: res.data.message || `Đã quét và đồng bộ thành công ${res.data.count} tài khoản từ cTID.` });
+      await fetchFullList();
+    } catch (err: any) {
+      const msg = err.response?.data?.detail || err.message || 'Lỗi quét tài khoản từ cTID.';
+      setActionMessage({ type: 'error', text: msg });
+    } finally {
+      setScanningProfileId(null);
     }
   };
 
@@ -611,12 +627,38 @@ export default function AccountManagerTab({ isGuest: _isGuest = false, onNavigat
                 </div>
 
                 {/* Profile Card Actions */}
-                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', gap: '0.45rem', flexWrap: 'wrap' }}>
+                  <button
+                    onClick={() => handleScanAccounts(prof.id)}
+                    disabled={scanningProfileId === prof.id || !prof.ctid_email}
+                    style={{
+                      flex: 1,
+                      minWidth: '95px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '0.3rem',
+                      background: 'rgba(16, 185, 129, 0.12)',
+                      border: '1px solid rgba(16, 185, 129, 0.35)',
+                      color: prof.ctid_email ? '#34d399' : '#64748b',
+                      padding: '0.45rem 0.4rem',
+                      borderRadius: '5px',
+                      fontSize: '0.72rem',
+                      fontWeight: 600,
+                      cursor: prof.ctid_email && scanningProfileId !== prof.id ? 'pointer' : 'not-allowed'
+                    }}
+                    title="Tự động gọi ctrader-cli accounts để quét và nạp toàn bộ danh sách tài khoản của cTID này"
+                  >
+                    <Download size={13} className={scanningProfileId === prof.id ? 'spin' : ''} />
+                    {scanningProfileId === prof.id ? 'Đang quét...' : 'Quét cTID'}
+                  </button>
+
                   <button
                     onClick={() => handleTestConnection(prof.id)}
                     disabled={isTesting || !hasOa}
                     style={{
                       flex: 1,
+                      minWidth: '95px',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
@@ -624,16 +666,16 @@ export default function AccountManagerTab({ isGuest: _isGuest = false, onNavigat
                       background: 'rgba(56, 189, 248, 0.12)',
                       border: '1px solid rgba(56, 189, 248, 0.3)',
                       color: hasOa ? '#38bdf8' : '#64748b',
-                      padding: '0.45rem 0.6rem',
+                      padding: '0.45rem 0.4rem',
                       borderRadius: '5px',
-                      fontSize: '0.75rem',
+                      fontSize: '0.72rem',
                       fontWeight: 600,
                       cursor: hasOa && !isTesting ? 'pointer' : 'not-allowed'
                     }}
                     title="Kiểm tra kết nối và tính hợp lệ của token tới cTrader Open API"
                   >
                     <Radio size={13} className={isTesting ? 'spin' : ''} />
-                    {isTesting ? 'Đang kiểm tra...' : 'Kiểm Tra Kết Nối'}
+                    {isTesting ? 'Đang test...' : 'Test API'}
                   </button>
 
                   <button
@@ -641,6 +683,7 @@ export default function AccountManagerTab({ isGuest: _isGuest = false, onNavigat
                     disabled={isRefreshing || !prof.open_api?.refresh_token}
                     style={{
                       flex: 1,
+                      minWidth: '95px',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
@@ -648,9 +691,9 @@ export default function AccountManagerTab({ isGuest: _isGuest = false, onNavigat
                       background: 'rgba(168, 85, 247, 0.12)',
                       border: '1px solid rgba(168, 85, 247, 0.3)',
                       color: prof.open_api?.refresh_token ? '#c084fc' : '#64748b',
-                      padding: '0.45rem 0.6rem',
+                      padding: '0.45rem 0.4rem',
                       borderRadius: '5px',
-                      fontSize: '0.75rem',
+                      fontSize: '0.72rem',
                       fontWeight: 600,
                       cursor: prof.open_api?.refresh_token && !isRefreshing ? 'pointer' : 'not-allowed'
                     }}

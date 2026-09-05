@@ -91,9 +91,16 @@ def test_refresh_token_missing():
     res = refresh_profile_open_api_token("non_existent_profile")
     assert res["status"] == "error"
 
+def test_scan_accounts_error_handling():
+    from account_config import scan_accounts_from_ctid
+    res = scan_accounts_from_ctid("non_existent_profile")
+    assert res["status"] == "error"
+    assert "không tồn tại" in res["message"]
+
 if __name__ == "__main__":
     print("Running Account Manager backend unit tests...")
     test_account_crud_and_sync()
     test_raw_json_validation()
     test_refresh_token_missing()
+    test_scan_accounts_error_handling()
     print("ALL Account Manager tests PASSED successfully!")

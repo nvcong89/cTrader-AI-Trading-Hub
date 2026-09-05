@@ -641,3 +641,129 @@ def get_account_details_with_stats(conn: Optional[sqlite3.Connection] = None) ->
             conn.close()
 
     return results
+
+def scan_accounts_from_ctid(profile_id: str) -> Dict[str, Any]:
+    """
+    Executes 'ctrader-cli accounts --ctid=<email> --pwd-file=<file>'
+    to fetch all linked trading accounts for a CTID profile, updates
+    ctrader_accounts.json, and synchronizes to SQLite accounts table.
+    Preserves existing account labels if already customized.
+    """
+    profile = get_profile_by_id(profile_id)
+    if not profile:
+        return {"status": "error", "message": f"Profile '{profile_id}' không tồn tại."}
+
+    email = (profile.get("ctid_email") or "").strip()
+    pwd = (profile.get("ctid_password") or "").strip()
+
+    if not email or not pwd:
+        return {"status": "error", "message": f"Profile '{profile.get('profile_name')}' chưa có đầy đủ email hoặc mật khẩu cTID."}
+
+    # Locate ctrader-cli
+    from bot_manager import get_ctrader_cli_path
+    cli_path = get_ctrader_cli_path()
+
+    import tempfile
+    import subprocess
+    
+    temp_pwd_file = None
+    try:
+        with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as f:
+            f.write(pwd)
+            temp_pwd_file = f.name
+
+        cmd = [
+            cli_path,
+            "accounts",
+            f"--ctid={email}",
+            f"--pwd-file={temp_pwd_file}"
+        ]
+
+        # Windows/Linux process isolation
+        kwargs = {}
+        if os.name == 'nt':
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        else:
+            kwargs["start_new_session"] = True
+
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30, **kwargs)
+
+        if proc.returncode != 0:
+            err_msg = proc.stderr.strip() or proc.stdout.strip()
+            return {"status": "error", "message": f"ctrader-cli accounts lỗi: {err_msg}"}
+
+        output = proc.stdout
+        start_idx = output.find("[")
+        end_idx = output.rfind("]")
+        if start_idx == -1 or end_idx == -1:
+            return {"status": "error", "message": f"Không tìm thấy danh sách JSON tài khoản trong kết quả trả về: {output[:200]}"}
+
+        raw_accounts = json.loads(output[start_idx:end_idx + 1])
+        if not isinstance(raw_accounts, list):
+            return {"status": "error", "message": "Dữ liệu trả về từ ctrader-cli không phải danh sách."}
+
+        # Load existing config to update
+        cfg = load_accounts_config()
+        target_profile = None
+        for p in cfg.get("profiles", []):
+            if p.get("id") == profile_id:
+                target_profile = p
+                break
+
+        if not target_profile:
+            return {"status": "error", "message": "Không tìm thấy profile trong file cấu hình."}
+
+        existing_accounts = target_profile.get("accounts", [])
+        # Create map of existing accounts by Number or Id to preserve custom labels and status
+        existing_map = {}
+        for acc in existing_accounts:
+            existing_map[str(acc.get("account_id", "")).strip()] = acc
+            if acc.get("ctid_trader_id"):
+                existing_map[str(acc.get("ctid_trader_id", "")).strip()] = acc
+
+        updated_accounts = []
+        for item in raw_accounts:
+            # item has: Id, Number, Broker, Live, DepositCurrency, Leverage, Balance
+            acc_num = str(item.get("Number", "")).strip()
+            ctid_id = str(item.get("Id", "")).strip()
+            broker = item.get("Broker", "FxPro")
+            is_live = item.get("Live", False)
+            currency = item.get("DepositCurrency", "USD")
+
+            # Check if this account already had a label or settings
+            match = existing_map.get(acc_num) or existing_map.get(ctid_id)
+            label = match.get("account_label", "") if match else ""
+            enabled = match.get("enabled", True) if match else True
+
+            updated_accounts.append({
+                "account_id": acc_num,
+                "ctid_trader_id": ctid_id,
+                "account_label": label,
+                "broker": broker,
+                "account_type": "live" if is_live else "demo",
+                "currency": currency,
+                "enabled": enabled
+            })
+
+        target_profile["accounts"] = updated_accounts
+        saved = save_accounts_config(cfg)
+        synced_count = sync_accounts_to_database()
+
+        return {
+            "status": "success",
+            "message": f"Đã quét và đồng bộ thành công {len(updated_accounts)} tài khoản từ cTID ({synced_count} tài khoản được lưu vào database).",
+            "count": len(updated_accounts),
+            "accounts": updated_accounts
+        }
+
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "message": "Quá thời gian chờ phản hồi từ cTrader CLI (Timeout 30s)."}
+    except Exception as ex:
+        return {"status": "error", "message": f"Ngoại lệ khi quét tài khoản cTID: {ex}"}
+    finally:
+        if temp_pwd_file and os.path.exists(temp_pwd_file):
+            try:
+                os.remove(temp_pwd_file)
+            except Exception:
+                pass
+

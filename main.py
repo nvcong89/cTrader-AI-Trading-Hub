@@ -1576,6 +1576,15 @@ async def refresh_profile_token(profile_id: str, request: Request):
         raise HTTPException(status_code=400, detail=result.get("message", "Token refresh failed"))
     return result
 
+@app.post("/api/accounts/profiles/{profile_id}/scan-accounts")
+async def scan_profile_accounts(profile_id: str, request: Request):
+    require_admin(request)
+    from account_config import scan_accounts_from_ctid
+    result = await asyncio.to_thread(scan_accounts_from_ctid, profile_id)
+    if result.get("status") != "success":
+        raise HTTPException(status_code=400, detail=result.get("message", "Quét tài khoản cTID thất bại"))
+    return result
+
 class CreateAccountPayload(BaseModel):
     profile_id: str
     account_id: str
