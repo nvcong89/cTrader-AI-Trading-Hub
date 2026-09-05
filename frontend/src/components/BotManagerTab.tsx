@@ -2318,6 +2318,7 @@ export default function BotManagerTab({ data, refreshData, isGuest = false }: Bo
                           <button
                             type="button"
                             key={acc.account_id}
+                            title={acc.account_label ? `${acc.account_label} (#${acc.account_id})` : `#${acc.account_id}`}
                             onClick={() => {
                               setDeployForm({
                                 ...deployForm,
@@ -2349,7 +2350,7 @@ export default function BotManagerTab({ data, refreshData, isGuest = false }: Bo
                                 {acc.broker}
                               </span>
                             )}
-                            {acc.account_label || acc.account_id} {acc.equity ? `($${acc.equity.toFixed(2)})` : ''}
+                            {acc.account_id} {acc.equity ? `($${acc.equity.toFixed(2)})` : ''}
                           </button>
                         );
                       })}
