@@ -25,7 +25,8 @@ import {
   ArrowDown,
   GripVertical,
   ShieldCheck,
-  Layers
+  Layers,
+  Key
 } from 'lucide-react';
 import ParameterStudioModal from './ParameterStudioModal';
 
@@ -74,6 +75,14 @@ interface AccountItem {
   last_updated?: string;
 }
 
+interface CTIDProfileItem {
+  id: string;
+  name?: string;
+  profile_name?: string;
+  ctid_email?: string;
+  accounts?: any[];
+}
+
 interface BotManagerTabProps {
   data: any;
   refreshData: () => void;
@@ -84,6 +93,8 @@ interface BotManagerTabProps {
 export default function BotManagerTab({ data, refreshData, isGuest = false, onNavigateToAccounts }: BotManagerTabProps) {
   const [cbots, setCbots] = useState<CBotItem[]>(data?.available_cbots || []);
   const [accounts, setAccounts] = useState<AccountItem[]>(data?.accounts || []);
+  const [profiles, setProfiles] = useState<CTIDProfileItem[]>([]);
+  const [deployProfileFilter, setDeployProfileFilter] = useState<string>('');
   const [selectedBotId, setSelectedBotId] = useState<number | null>(null);
   const [paramModalBot, setParamModalBot] = useState<BotInstance | null>(null);
   const [botLogs, setBotLogs] = useState<string[]>([]);
@@ -122,18 +133,31 @@ export default function BotManagerTab({ data, refreshData, isGuest = false, onNa
   const logContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Fetch updated cbots library and accounts
+  // Fetch updated cbots library, accounts, and profiles
   const fetchAuxiliaryData = async () => {
     try {
-      const [cbotsRes, accountsRes] = await Promise.all([
+      const [cbotsRes, accountsRes, profilesRes] = await Promise.all([
         axios.get(`${getApiBaseUrl()}/api/cbots`, { withCredentials: true }),
-        axios.get(`${getApiBaseUrl()}/api/accounts`, { withCredentials: true })
+        axios.get(`${getApiBaseUrl()}/api/accounts`, { withCredentials: true }),
+        axios.get(`${getApiBaseUrl()}/api/accounts/profiles`, { withCredentials: true })
       ]);
       if (cbotsRes.data?.cbots) setCbots(cbotsRes.data.cbots);
       if (accountsRes.data?.accounts) setAccounts(accountsRes.data.accounts);
+      if (profilesRes.data?.profiles) setProfiles(profilesRes.data.profiles);
     } catch (err) {
       console.error('Error fetching auxiliary data:', err);
     }
+  };
+
+  const isAccountInProfile = (acc: AccountItem, profId: string) => {
+    if (!profId) return true;
+    if (acc.profile_id && acc.profile_id === profId) return true;
+    const profile = profiles.find(p => p.id === profId);
+    if (profile) {
+      if (profile.ctid_email && acc.ctid_email && profile.ctid_email.toLowerCase() === acc.ctid_email.toLowerCase()) return true;
+      if (profile.accounts && profile.accounts.some((a: any) => String(a.account_id) === String(acc.account_id))) return true;
+    }
+    return false;
   };
 
   useEffect(() => {
@@ -2324,94 +2348,35 @@ export default function BotManagerTab({ data, refreshData, isGuest = false, onNa
                 </select>
               </div>
 
-              {/* Account Selection from Account Manager */}
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
-                  <label style={{ fontSize: '0.825rem', fontWeight: 600, color: '#cbd5e1', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                    <Wallet size={15} color="#38bdf8" /> Tài khoản Giao dịch (Connected cTrader Account) <span style={{ color: '#ef4444' }}>*</span>
-                  </label>
-                  {onNavigateToAccounts && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsDeployModalOpen(false);
-                        onNavigateToAccounts();
-                      }}
-                      style={{
-                        background: 'transparent',
-                        border: 'none',
-                        color: '#38bdf8',
-                        fontSize: '0.75rem',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '0.25rem',
-                        padding: 0
-                      }}
-                    >
-                      <Sliders size={12} /> Quản lý tài khoản
-                    </button>
-                  )}
-                </div>
-
-                {accounts.length === 0 ? (
-                  <div style={{
-                    background: 'rgba(239, 68, 68, 0.1)',
-                    border: '1px solid rgba(239, 68, 68, 0.3)',
-                    borderRadius: '8px',
-                    padding: '0.85rem 1rem',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: '1rem'
-                  }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fca5a5', fontSize: '0.825rem' }}>
-                      <AlertCircle size={18} />
-                      <span>Chưa có tài khoản cTrader nào được cấu hình trong hệ thống.</span>
+              {/* CTID Profile & Account Selection from Account Manager */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                {/* 1. CTID Profile Selector */}
+                {profiles.length > 0 && (
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                      <label style={{ fontSize: '0.825rem', fontWeight: 600, color: '#cbd5e1', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <Key size={14} color="#38bdf8" /> Hồ sơ CTID (CTID Profile)
+                      </label>
+                      <span style={{ fontSize: '0.725rem', color: '#94a3b8' }}>
+                        Lọc tài khoản theo hồ sơ đăng nhập
+                      </span>
                     </div>
-                    {onNavigateToAccounts && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsDeployModalOpen(false);
-                          onNavigateToAccounts();
-                        }}
-                        style={{
-                          background: '#0284c7',
-                          border: 'none',
-                          color: 'white',
-                          fontSize: '0.75rem',
-                          padding: '0.35rem 0.75rem',
-                          borderRadius: '4px',
-                          cursor: 'pointer',
-                          fontWeight: 600,
-                          whiteSpace: 'nowrap'
-                        }}
-                      >
-                        + Thêm tài khoản
-                      </button>
-                    )}
-                  </div>
-                ) : (
-                  <>
                     <select
-                      required
-                      value={deployForm.account_id}
+                      value={deployProfileFilter}
                       onChange={(e) => {
-                        const val = e.target.value;
-                        const matched = accounts.find((a) => String(a.account_id) === val);
-                        if (matched) {
-                          const isLive = (matched.account_type || '').toLowerCase() === 'live';
-                          const cleanCbot = cbots.find(c => c.filename === deployForm.algo_path)?.name || deployForm.name;
-                          setDeployForm(prev => ({
-                            ...prev,
-                            account_id: String(matched.account_id),
-                            account_label: matched.account_label || `Account #${matched.account_id}`,
-                            account_type: isLive ? 'live' : 'demo',
-                            name: generateBotInstanceName(cleanCbot, matched.account_id, prev.symbol, prev.timeframe)
-                          }));
-                        } else {
-                          setDeployForm(prev => ({ ...prev, account_id: val }));
+                        const newProfId = e.target.value;
+                        setDeployProfileFilter(newProfId);
+                        // Reset account if not in selected profile
+                        if (newProfId && deployForm.account_id) {
+                          const isStillValid = accounts.some(a => String(a.account_id) === String(deployForm.account_id) && isAccountInProfile(a, newProfId));
+                          if (!isStillValid) {
+                            setDeployForm(prev => ({
+                              ...prev,
+                              account_id: '',
+                              account_label: '',
+                              account_type: 'demo'
+                            }));
+                          }
                         }
                       }}
                       style={{
@@ -2425,85 +2390,222 @@ export default function BotManagerTab({ data, refreshData, isGuest = false, onNa
                         boxSizing: 'border-box'
                       }}
                     >
-                      <option value="" disabled>-- Chọn tài khoản cTrader để chạy bot --</option>
-                      {accounts.filter(a => (a.account_type || '').toLowerCase() === 'live').length > 0 && (
-                        <optgroup label="🟢 TÀI KHOẢN LIVE / REAL">
-                          {accounts.filter(a => (a.account_type || '').toLowerCase() === 'live').map((acc) => (
-                            <option key={acc.account_id} value={acc.account_id}>
-                              🟢 [LIVE] {acc.broker ? `${acc.broker} ` : ''}#{acc.account_id} {acc.account_label ? `— ${acc.account_label}` : ''} {acc.equity ? `(Equity: $${acc.equity.toLocaleString()})` : ''}
-                            </option>
-                          ))}
-                        </optgroup>
-                      )}
-                      {accounts.filter(a => (a.account_type || '').toLowerCase() !== 'live').length > 0 && (
-                        <optgroup label="🔵 TÀI KHOẢN DEMO">
-                          {accounts.filter(a => (a.account_type || '').toLowerCase() !== 'live').map((acc) => (
-                            <option key={acc.account_id} value={acc.account_id}>
-                              🔵 [DEMO] {acc.broker ? `${acc.broker} ` : ''}#{acc.account_id} {acc.account_label ? `— ${acc.account_label}` : ''} {acc.equity ? `(Equity: $${acc.equity.toLocaleString()})` : ''}
-                            </option>
-                          ))}
-                        </optgroup>
-                      )}
+                      <option value="">🌐 Tất cả hồ sơ CTID (All Profiles) ({accounts.length} tài khoản)</option>
+                      {profiles.map(p => {
+                        const pName = p.profile_name || p.name || 'Hồ sơ CTID';
+                        const count = accounts.filter(a => isAccountInProfile(a, p.id)).length;
+                        return (
+                          <option key={p.id} value={p.id}>
+                            👤 {pName} {p.ctid_email ? `(${p.ctid_email})` : ''} — {count} tài khoản
+                          </option>
+                        );
+                      })}
                     </select>
-
-                    {/* Selected Account Summary Card */}
-                    {(() => {
-                      const selectedAcc = accounts.find(a => String(a.account_id) === String(deployForm.account_id));
-                      if (!selectedAcc) return null;
-                      const isLive = (selectedAcc.account_type || '').toLowerCase() === 'live';
-                      return (
-                        <div style={{
-                          marginTop: '0.6rem',
-                          padding: '0.75rem 1rem',
-                          background: 'rgba(15, 23, 42, 0.75)',
-                          border: `1px solid ${isLive ? 'rgba(245, 158, 11, 0.4)' : 'rgba(56, 189, 248, 0.4)'}`,
-                          borderRadius: '8px',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '0.45rem'
-                        }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                              <span style={{
-                                fontSize: '0.7rem',
-                                fontWeight: 800,
-                                padding: '0.15rem 0.45rem',
-                                borderRadius: '4px',
-                                background: isLive ? 'rgba(245, 158, 11, 0.2)' : 'rgba(56, 189, 248, 0.2)',
-                                color: isLive ? '#fbbf24' : '#38bdf8',
-                                border: `1px solid ${isLive ? 'rgba(245, 158, 11, 0.4)' : 'rgba(56, 189, 248, 0.4)'}`
-                              }}>
-                                {isLive ? 'LIVE' : 'DEMO'}
-                              </span>
-                              {selectedAcc.broker && (
-                                <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#cbd5e1', background: '#334155', padding: '0.1rem 0.45rem', borderRadius: '4px' }}>
-                                  {selectedAcc.broker}
-                                </span>
-                              )}
-                              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', fontWeight: 700, color: '#f8fafc' }}>
-                                #{selectedAcc.account_id}
-                              </span>
-                              {selectedAcc.account_label && (
-                                <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
-                                  ({selectedAcc.account_label})
-                                </span>
-                              )}
-                            </div>
-                            {selectedAcc.equity !== undefined && (
-                              <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#10b981' }}>
-                                Equity: ${selectedAcc.equity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                              </div>
-                            )}
-                          </div>
-                          <div style={{ fontSize: '0.75rem', color: '#64748b', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                            <ShieldCheck size={13} color="#10b981" />
-                            <span>Tự động liên kết CTID Profile an toàn (không cần nhập mật khẩu)</span>
-                          </div>
-                        </div>
-                      );
-                    })()}
-                  </>
+                  </div>
                 )}
+
+                {/* 2. Account Dropdown */}
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                    <label style={{ fontSize: '0.825rem', fontWeight: 600, color: '#cbd5e1', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <Wallet size={15} color="#38bdf8" /> Tài khoản Giao dịch (Connected cTrader Account) <span style={{ color: '#ef4444' }}>*</span>
+                    </label>
+                    {onNavigateToAccounts && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsDeployModalOpen(false);
+                          onNavigateToAccounts();
+                        }}
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: '#38bdf8',
+                          fontSize: '0.75rem',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.25rem',
+                          padding: 0
+                        }}
+                      >
+                        <Sliders size={12} /> Quản lý tài khoản
+                      </button>
+                    )}
+                  </div>
+
+                  {accounts.length === 0 ? (
+                    <div style={{
+                      background: 'rgba(239, 68, 68, 0.1)',
+                      border: '1px solid rgba(239, 68, 68, 0.3)',
+                      borderRadius: '8px',
+                      padding: '0.85rem 1rem',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '1rem'
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fca5a5', fontSize: '0.825rem' }}>
+                        <AlertCircle size={18} />
+                        <span>Chưa có tài khoản cTrader nào được cấu hình trong hệ thống.</span>
+                      </div>
+                      {onNavigateToAccounts && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsDeployModalOpen(false);
+                            onNavigateToAccounts();
+                          }}
+                          style={{
+                            background: '#0284c7',
+                            border: 'none',
+                            color: 'white',
+                            fontSize: '0.75rem',
+                            padding: '0.35rem 0.75rem',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            fontWeight: 600,
+                            whiteSpace: 'nowrap'
+                          }}
+                        >
+                          + Thêm tài khoản
+                        </button>
+                      )}
+                    </div>
+                  ) : (() => {
+                    const filteredAccounts = deployProfileFilter
+                      ? accounts.filter(a => isAccountInProfile(a, deployProfileFilter))
+                      : accounts;
+                    const liveAccounts = filteredAccounts.filter(a => (a.account_type || '').toLowerCase() === 'live');
+                    const demoAccounts = filteredAccounts.filter(a => (a.account_type || '').toLowerCase() !== 'live');
+
+                    return (
+                      <>
+                        <select
+                          required
+                          value={deployForm.account_id}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            const matched = accounts.find((a) => String(a.account_id) === val);
+                            if (matched) {
+                              const isLive = (matched.account_type || '').toLowerCase() === 'live';
+                              const cleanCbot = cbots.find(c => c.filename === deployForm.algo_path)?.name || deployForm.name;
+                              setDeployForm(prev => ({
+                                ...prev,
+                                account_id: String(matched.account_id),
+                                account_label: matched.account_label || `Account #${matched.account_id}`,
+                                account_type: isLive ? 'live' : 'demo',
+                                name: generateBotInstanceName(cleanCbot, matched.account_id, prev.symbol, prev.timeframe)
+                              }));
+                            } else {
+                              setDeployForm(prev => ({ ...prev, account_id: val }));
+                            }
+                          }}
+                          style={{
+                            width: '100%',
+                            padding: '0.65rem 0.85rem',
+                            background: '#0f172a',
+                            border: '1px solid #334155',
+                            borderRadius: '6px',
+                            color: 'white',
+                            fontSize: '0.9rem',
+                            boxSizing: 'border-box'
+                          }}
+                        >
+                          <option value="" disabled>-- Chọn tài khoản cTrader để chạy bot --</option>
+                          {liveAccounts.length > 0 && (
+                            <optgroup label="🟢 TÀI KHOẢN LIVE / REAL">
+                              {liveAccounts.map((acc) => (
+                                <option key={acc.account_id} value={acc.account_id}>
+                                  🟢 [LIVE] {acc.broker ? `${acc.broker} ` : ''}#{acc.account_id} {acc.account_label ? `— ${acc.account_label}` : ''} {acc.equity ? `(Equity: $${acc.equity.toLocaleString()})` : ''}
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
+                          {demoAccounts.length > 0 && (
+                            <optgroup label="🔵 TÀI KHOẢN DEMO">
+                              {demoAccounts.map((acc) => (
+                                <option key={acc.account_id} value={acc.account_id}>
+                                  🔵 [DEMO] {acc.broker ? `${acc.broker} ` : ''}#{acc.account_id} {acc.account_label ? `— ${acc.account_label}` : ''} {acc.equity ? `(Equity: $${acc.equity.toLocaleString()})` : ''}
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
+                          {filteredAccounts.length === 0 && (
+                            <option value="" disabled>-- Không có tài khoản nào thuộc hồ sơ này --</option>
+                          )}
+                        </select>
+
+                        {/* Selected Account Summary Card */}
+                        {(() => {
+                          const selectedAcc = accounts.find(a => String(a.account_id) === String(deployForm.account_id));
+                          if (!selectedAcc) return null;
+                          const isLive = (selectedAcc.account_type || '').toLowerCase() === 'live';
+                          const matchedProf = profiles.find(p => isAccountInProfile(selectedAcc, p.id));
+                          const profDisplayName = matchedProf ? (matchedProf.profile_name || matchedProf.name || 'CTID Profile') : null;
+                          const ctidDisplay = selectedAcc.ctid_email || (matchedProf ? matchedProf.ctid_email : null);
+
+                          return (
+                            <div style={{
+                              marginTop: '0.6rem',
+                              padding: '0.75rem 1rem',
+                              background: 'rgba(15, 23, 42, 0.75)',
+                              border: `1px solid ${isLive ? 'rgba(245, 158, 11, 0.4)' : 'rgba(56, 189, 248, 0.4)'}`,
+                              borderRadius: '8px',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '0.45rem'
+                            }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                  <span style={{
+                                    fontSize: '0.7rem',
+                                    fontWeight: 800,
+                                    padding: '0.15rem 0.45rem',
+                                    borderRadius: '4px',
+                                    background: isLive ? 'rgba(245, 158, 11, 0.2)' : 'rgba(56, 189, 248, 0.2)',
+                                    color: isLive ? '#fbbf24' : '#38bdf8',
+                                    border: `1px solid ${isLive ? 'rgba(245, 158, 11, 0.4)' : 'rgba(56, 189, 248, 0.4)'}`
+                                  }}>
+                                    {isLive ? 'LIVE' : 'DEMO'}
+                                  </span>
+                                  {selectedAcc.broker && (
+                                    <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#cbd5e1', background: '#334155', padding: '0.1rem 0.45rem', borderRadius: '4px' }}>
+                                      {selectedAcc.broker}
+                                    </span>
+                                  )}
+                                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', fontWeight: 700, color: '#f8fafc' }}>
+                                    #{selectedAcc.account_id}
+                                  </span>
+                                  {selectedAcc.account_label && (
+                                    <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
+                                      ({selectedAcc.account_label})
+                                    </span>
+                                  )}
+                                </div>
+                                {selectedAcc.equity !== undefined && (
+                                  <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#10b981' }}>
+                                    Equity: ${selectedAcc.equity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                  </div>
+                                )}
+                              </div>
+                              <div style={{ fontSize: '0.75rem', color: '#94a3b8', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.4rem', borderTop: '1px dashed #334155', paddingTop: '0.35rem' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                                  <Key size={13} color="#38bdf8" />
+                                  <span>Hồ sơ: <strong style={{ color: '#e2e8f0' }}>{profDisplayName || 'Mặc định'}</strong> {ctidDisplay ? `(${ctidDisplay})` : ''}</span>
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#10b981' }}>
+                                  <ShieldCheck size={13} />
+                                  <span>Tự động liên kết an toàn</span>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </>
+                    );
+                  })()}
+                </div>
               </div>
 
               {/* Symbol & Timeframe */}
@@ -3200,6 +3302,7 @@ export default function BotManagerTab({ data, refreshData, isGuest = false, onNa
           botName={paramModalBot.name}
           status={paramModalBot.status}
           accounts={accounts}
+          profiles={profiles}
           onNavigateToAccounts={onNavigateToAccounts}
           onClose={() => setParamModalBot(null)}
           onSuccess={(msg) => {

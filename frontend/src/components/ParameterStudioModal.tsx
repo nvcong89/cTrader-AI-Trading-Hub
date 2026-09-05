@@ -17,7 +17,8 @@ import {
   Bell,
   RefreshCw,
   Wallet,
-  ShieldCheck
+  ShieldCheck,
+  Key
 } from 'lucide-react';
 
 interface ParameterMeta {
@@ -44,11 +45,20 @@ interface AccountItem {
   last_updated?: string;
 }
 
+interface CTIDProfileItem {
+  id: string;
+  name?: string;
+  profile_name?: string;
+  ctid_email?: string;
+  accounts?: any[];
+}
+
 interface ParameterStudioModalProps {
   botId: number;
   botName: string;
   status: 'RUNNING' | 'STOPPED' | 'ERROR';
   accounts?: AccountItem[];
+  profiles?: CTIDProfileItem[];
   onNavigateToAccounts?: () => void;
   onClose: () => void;
   onSuccess: (msg: string) => void;
@@ -60,6 +70,7 @@ export default function ParameterStudioModal({
   botName,
   status,
   accounts = [],
+  profiles = [],
   onNavigateToAccounts,
   onClose,
   onSuccess,
@@ -71,6 +82,7 @@ export default function ParameterStudioModal({
   const [parameters, setParameters] = useState<ParameterMeta[]>([]);
   const [formValues, setFormValues] = useState<{ [key: string]: any }>({});
   const [selectedGroup, setSelectedGroup] = useState<string>('Account & Bot');
+  const [selectedProfileFilter, setSelectedProfileFilter] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [restartOnSave, setRestartOnSave] = useState<boolean>(status === 'RUNNING');
 
@@ -85,6 +97,30 @@ export default function ParameterStudioModal({
     symbol: 'XAUUSD',
     timeframe: 'm15'
   });
+
+  const isAccountInProfile = (acc: AccountItem, profId: string) => {
+    if (!profId) return true;
+    if (acc.profile_id && acc.profile_id === profId) return true;
+    const profile = profiles.find(p => p.id === profId);
+    if (profile) {
+      if (profile.ctid_email && acc.ctid_email && profile.ctid_email.toLowerCase() === acc.ctid_email.toLowerCase()) return true;
+      if (profile.accounts && profile.accounts.some((a: any) => String(a.account_id) === String(acc.account_id))) return true;
+    }
+    return false;
+  };
+
+  // Auto-initialize profile filter if an account is already linked
+  useEffect(() => {
+    if (accountInfo.account_id && profiles.length > 0 && !selectedProfileFilter) {
+      const matchedAcc = accounts.find(a => String(a.account_id) === String(accountInfo.account_id));
+      if (matchedAcc) {
+        const matchedProf = profiles.find(p => isAccountInProfile(matchedAcc, p.id));
+        if (matchedProf) {
+          setSelectedProfileFilter(matchedProf.id);
+        }
+      }
+    }
+  }, [accountInfo.account_id, profiles, accounts]);
 
   // 1. Fetch schema and current values
   useEffect(() => {
@@ -532,6 +568,60 @@ export default function ParameterStudioModal({
                       )}
                     </div>
 
+                    {/* CTID Profile Selector */}
+                    {profiles.length > 0 && (
+                      <div style={{ marginBottom: '1rem' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                          <label style={{ fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                            <Key size={13} color="#38bdf8" /> Hồ sơ CTID (CTID Profile)
+                          </label>
+                          <span style={{ fontSize: '0.7rem', color: '#64748b' }}>
+                            Lọc tài khoản theo hồ sơ đăng nhập
+                          </span>
+                        </div>
+                        <select
+                          value={selectedProfileFilter}
+                          onChange={(e) => {
+                            const newProfId = e.target.value;
+                            setSelectedProfileFilter(newProfId);
+                            // Reset account if not in selected profile
+                            if (newProfId && accountInfo.account_id) {
+                              const isStillValid = accounts.some(a => String(a.account_id) === String(accountInfo.account_id) && isAccountInProfile(a, newProfId));
+                              if (!isStillValid) {
+                                setAccountInfo(prev => ({
+                                  ...prev,
+                                  account_id: '',
+                                  account_label: '',
+                                  account_type: 'demo'
+                                }));
+                              }
+                            }
+                          }}
+                          style={{
+                            width: '100%',
+                            background: '#090d16',
+                            border: '1px solid rgba(255, 255, 255, 0.15)',
+                            borderRadius: '6px',
+                            color: '#f8fafc',
+                            padding: '0.6rem 0.75rem',
+                            fontSize: '0.875rem',
+                            boxSizing: 'border-box'
+                          }}
+                        >
+                          <option value="">🌐 Tất cả hồ sơ CTID (All Profiles) ({accounts.length} tài khoản)</option>
+                          {profiles.map(p => {
+                            const pName = p.profile_name || p.name || 'Hồ sơ CTID';
+                            const count = accounts.filter(a => isAccountInProfile(a, p.id)).length;
+                            return (
+                              <option key={p.id} value={p.id}>
+                                👤 {pName} {p.ctid_email ? `(${p.ctid_email})` : ''} — {count} tài khoản
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </div>
+                    )}
+
                     {/* Account Selector */}
                     <div>
                       <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', marginBottom: '6px', textTransform: 'uppercase' }}>
@@ -573,115 +663,136 @@ export default function ParameterStudioModal({
                             </button>
                           )}
                         </div>
-                      ) : (
-                        <>
-                          <select
-                            value={accountInfo.account_id}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              const matched = accounts.find((a) => String(a.account_id) === val);
-                              if (matched) {
-                                const isLive = (matched.account_type || '').toLowerCase() === 'live';
-                                setAccountInfo(prev => ({
-                                  ...prev,
-                                  account_id: String(matched.account_id),
-                                  account_label: matched.account_label || `Account #${matched.account_id}`,
-                                  account_type: isLive ? 'live' : 'demo'
-                                }));
-                              } else {
-                                setAccountInfo(prev => ({ ...prev, account_id: val }));
-                              }
-                            }}
-                            style={{
-                              width: '100%',
-                              background: '#090d16',
-                              border: '1px solid rgba(255, 255, 255, 0.15)',
-                              borderRadius: '6px',
-                              color: '#f8fafc',
-                              padding: '0.6rem 0.75rem',
-                              fontSize: '0.875rem',
-                              boxSizing: 'border-box'
-                            }}
-                          >
-                            <option value="" disabled>-- Chọn tài khoản cTrader --</option>
-                            {accounts.filter(a => (a.account_type || '').toLowerCase() === 'live').length > 0 && (
-                              <optgroup label="🟢 TÀI KHOẢN LIVE / REAL">
-                                {accounts.filter(a => (a.account_type || '').toLowerCase() === 'live').map((acc) => (
-                                  <option key={acc.account_id} value={acc.account_id}>
-                                    🟢 [LIVE] {acc.broker ? `${acc.broker} ` : ''}#{acc.account_id} {acc.account_label ? `— ${acc.account_label}` : ''} {acc.equity ? `(Equity: $${acc.equity.toLocaleString()})` : ''}
-                                  </option>
-                                ))}
-                              </optgroup>
-                            )}
-                            {accounts.filter(a => (a.account_type || '').toLowerCase() !== 'live').length > 0 && (
-                              <optgroup label="🔵 TÀI KHOẢN DEMO">
-                                {accounts.filter(a => (a.account_type || '').toLowerCase() !== 'live').map((acc) => (
-                                  <option key={acc.account_id} value={acc.account_id}>
-                                    🔵 [DEMO] {acc.broker ? `${acc.broker} ` : ''}#{acc.account_id} {acc.account_label ? `— ${acc.account_label}` : ''} {acc.equity ? `(Equity: $${acc.equity.toLocaleString()})` : ''}
-                                  </option>
-                                ))}
-                              </optgroup>
-                            )}
-                          </select>
+                      ) : (() => {
+                        const filteredAccounts = selectedProfileFilter
+                          ? accounts.filter(a => isAccountInProfile(a, selectedProfileFilter))
+                          : accounts;
+                        const liveAccounts = filteredAccounts.filter(a => (a.account_type || '').toLowerCase() === 'live');
+                        const demoAccounts = filteredAccounts.filter(a => (a.account_type || '').toLowerCase() !== 'live');
 
-                          {/* Selected Account Summary Card */}
-                          {(() => {
-                            const selectedAcc = accounts.find(a => String(a.account_id) === String(accountInfo.account_id));
-                            if (!selectedAcc) return null;
-                            const isLive = (selectedAcc.account_type || '').toLowerCase() === 'live';
-                            return (
-                              <div style={{
-                                marginTop: '0.6rem',
-                                padding: '0.75rem 1rem',
-                                background: 'rgba(15, 23, 42, 0.75)',
-                                border: `1px solid ${isLive ? 'rgba(245, 158, 11, 0.4)' : 'rgba(56, 189, 248, 0.4)'}`,
-                                borderRadius: '8px',
-                                display: 'flex',
-                                flexDirection: 'column',
-                                gap: '0.45rem'
-                              }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                    <span style={{
-                                      fontSize: '0.7rem',
-                                      fontWeight: 800,
-                                      padding: '0.15rem 0.45rem',
-                                      borderRadius: '4px',
-                                      background: isLive ? 'rgba(245, 158, 11, 0.2)' : 'rgba(56, 189, 248, 0.2)',
-                                      color: isLive ? '#fbbf24' : '#38bdf8',
-                                      border: `1px solid ${isLive ? 'rgba(245, 158, 11, 0.4)' : 'rgba(56, 189, 248, 0.4)'}`
-                                    }}>
-                                      {isLive ? 'LIVE' : 'DEMO'}
-                                    </span>
-                                    {selectedAcc.broker && (
-                                      <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#cbd5e1', background: '#334155', padding: '0.1rem 0.45rem', borderRadius: '4px' }}>
-                                        {selectedAcc.broker}
+                        return (
+                          <>
+                            <select
+                              value={accountInfo.account_id}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                const matched = accounts.find((a) => String(a.account_id) === val);
+                                if (matched) {
+                                  const isLive = (matched.account_type || '').toLowerCase() === 'live';
+                                  setAccountInfo(prev => ({
+                                    ...prev,
+                                    account_id: String(matched.account_id),
+                                    account_label: matched.account_label || `Account #${matched.account_id}`,
+                                    account_type: isLive ? 'live' : 'demo'
+                                  }));
+                                } else {
+                                  setAccountInfo(prev => ({ ...prev, account_id: val }));
+                                }
+                              }}
+                              style={{
+                                width: '100%',
+                                background: '#090d16',
+                                border: '1px solid rgba(255, 255, 255, 0.15)',
+                                borderRadius: '6px',
+                                color: '#f8fafc',
+                                padding: '0.6rem 0.75rem',
+                                fontSize: '0.875rem',
+                                boxSizing: 'border-box'
+                              }}
+                            >
+                              <option value="" disabled>-- Chọn tài khoản cTrader --</option>
+                              {liveAccounts.length > 0 && (
+                                <optgroup label="🟢 TÀI KHOẢN LIVE / REAL">
+                                  {liveAccounts.map((acc) => (
+                                    <option key={acc.account_id} value={acc.account_id}>
+                                      🟢 [LIVE] {acc.broker ? `${acc.broker} ` : ''}#{acc.account_id} {acc.account_label ? `— ${acc.account_label}` : ''} {acc.equity ? `(Equity: $${acc.equity.toLocaleString()})` : ''}
+                                    </option>
+                                  ))}
+                                </optgroup>
+                              )}
+                              {demoAccounts.length > 0 && (
+                                <optgroup label="🔵 TÀI KHOẢN DEMO">
+                                  {demoAccounts.map((acc) => (
+                                    <option key={acc.account_id} value={acc.account_id}>
+                                      🔵 [DEMO] {acc.broker ? `${acc.broker} ` : ''}#{acc.account_id} {acc.account_label ? `— ${acc.account_label}` : ''} {acc.equity ? `(Equity: $${acc.equity.toLocaleString()})` : ''}
+                                    </option>
+                                  ))}
+                                </optgroup>
+                              )}
+                              {filteredAccounts.length === 0 && (
+                                <option value="" disabled>-- Không có tài khoản nào thuộc hồ sơ này --</option>
+                              )}
+                            </select>
+
+                            {/* Selected Account Summary Card */}
+                            {(() => {
+                              const selectedAcc = accounts.find(a => String(a.account_id) === String(accountInfo.account_id));
+                              if (!selectedAcc) return null;
+                              const isLive = (selectedAcc.account_type || '').toLowerCase() === 'live';
+                              const matchedProf = profiles.find(p => isAccountInProfile(selectedAcc, p.id));
+                              const profDisplayName = matchedProf ? (matchedProf.profile_name || matchedProf.name || 'CTID Profile') : null;
+                              const ctidDisplay = selectedAcc.ctid_email || (matchedProf ? matchedProf.ctid_email : null);
+
+                              return (
+                                <div style={{
+                                  marginTop: '0.6rem',
+                                  padding: '0.75rem 1rem',
+                                  background: 'rgba(15, 23, 42, 0.75)',
+                                  border: `1px solid ${isLive ? 'rgba(245, 158, 11, 0.4)' : 'rgba(56, 189, 248, 0.4)'}`,
+                                  borderRadius: '8px',
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  gap: '0.45rem'
+                                }}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                      <span style={{
+                                        fontSize: '0.7rem',
+                                        fontWeight: 800,
+                                        padding: '0.15rem 0.45rem',
+                                        borderRadius: '4px',
+                                        background: isLive ? 'rgba(245, 158, 11, 0.2)' : 'rgba(56, 189, 248, 0.2)',
+                                        color: isLive ? '#fbbf24' : '#38bdf8',
+                                        border: `1px solid ${isLive ? 'rgba(245, 158, 11, 0.4)' : 'rgba(56, 189, 248, 0.4)'}`
+                                      }}>
+                                        {isLive ? 'LIVE' : 'DEMO'}
                                       </span>
-                                    )}
-                                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', fontWeight: 700, color: '#f8fafc' }}>
-                                      #{selectedAcc.account_id}
-                                    </span>
-                                    {selectedAcc.account_label && (
-                                      <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
-                                        ({selectedAcc.account_label})
+                                      {selectedAcc.broker && (
+                                        <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#cbd5e1', background: '#334155', padding: '0.1rem 0.45rem', borderRadius: '4px' }}>
+                                          {selectedAcc.broker}
+                                        </span>
+                                      )}
+                                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', fontWeight: 700, color: '#f8fafc' }}>
+                                        #{selectedAcc.account_id}
                                       </span>
+                                      {selectedAcc.account_label && (
+                                        <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
+                                          ({selectedAcc.account_label})
+                                        </span>
+                                      )}
+                                    </div>
+                                    {selectedAcc.equity !== undefined && (
+                                      <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#10b981' }}>
+                                        Equity: ${selectedAcc.equity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                      </div>
                                     )}
                                   </div>
-                                  {selectedAcc.equity !== undefined && (
-                                    <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#10b981' }}>
-                                      Equity: ${selectedAcc.equity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                  <div style={{ fontSize: '0.75rem', color: '#94a3b8', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.4rem', borderTop: '1px dashed #334155', paddingTop: '0.35rem' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                                      <Key size={13} color="#38bdf8" />
+                                      <span>Hồ sơ: <strong style={{ color: '#e2e8f0' }}>{profDisplayName || 'Mặc định'}</strong> {ctidDisplay ? `(${ctidDisplay})` : ''}</span>
                                     </div>
-                                  )}
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#10b981' }}>
+                                      <ShieldCheck size={13} />
+                                      <span>Tự động liên kết an toàn</span>
+                                    </div>
+                                  </div>
                                 </div>
-                                <div style={{ fontSize: '0.75rem', color: '#64748b', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                                  <ShieldCheck size={13} color="#10b981" />
-                                  <span>Tự động liên kết CTID Profile an toàn (không cần nhập mật khẩu)</span>
-                                </div>
-                              </div>
-                            );
-                          })()}
-                        </>
-                      )}
+                              );
+                            })()}
+                          </>
+                        );
+                      })()}
                     </div>
 
                     {/* Instance Name */}
