@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { Activity, Bot, Cpu, History, LogOut, Menu, TerminalSquare, X, Zap, Award, ShieldCheck, Eye, RefreshCw, Wifi, Gauge, CheckCircle2, AlertTriangle, ArrowRight, BrainCircuit, Wallet } from 'lucide-react';
+import { Activity, Bot, Cpu, History, LogOut, Menu, TerminalSquare, X, Zap, Award, ShieldCheck, Eye, RefreshCw, Wifi, Gauge, CheckCircle2, AlertTriangle, ArrowRight, BrainCircuit, Wallet, Flame } from 'lucide-react';
 import { getApiBaseUrl } from './config';
 import OverviewTab from './components/OverviewTab';
 import ActivePositionsTab from './components/ActivePositionsTab';
@@ -9,11 +9,12 @@ import BotManagerTab from './components/BotManagerTab';
 import AgentTab from './components/AgentTab';
 import AIBenchmarkTab from './components/AIBenchmarkTab';
 import StrategyAuditTab from './components/StrategyAuditTab';
+import NewsAssessmentTab from './components/NewsAssessmentTab';
 import TradeHistoryTab from './components/TradeHistoryTab';
 import AccountManagerTab from './components/AccountManagerTab';
 import SystemLogsTab from './components/SystemLogsTab';
 
-type TabType = 'overview' | 'positions' | 'bots' | 'agent' | 'benchmark' | 'audit' | 'history' | 'accounts' | 'logs';
+type TabType = 'overview' | 'positions' | 'bots' | 'agent' | 'benchmark' | 'audit' | 'news' | 'history' | 'accounts' | 'logs';
 
 export default function Dashboard() {
   const getInitialDashboardData = () => {
@@ -69,7 +70,7 @@ export default function Dashboard() {
 
   const getInitialTab = (): TabType => {
     const hash = window.location.hash.replace('#', '') as TabType;
-    const validTabs: TabType[] = ['overview', 'positions', 'bots', 'agent', 'benchmark', 'audit', 'history', 'accounts', 'logs'];
+    const validTabs: TabType[] = ['overview', 'positions', 'bots', 'agent', 'benchmark', 'audit', 'news', 'history', 'accounts', 'logs'];
     if (validTabs.includes(hash)) {
       return hash;
     }
@@ -272,6 +273,8 @@ export default function Dashboard() {
         return <AIBenchmarkTab isGuest={isGuest} />;
       case 'audit':
         return <StrategyAuditTab isGuest={isGuest} />;
+      case 'news':
+        return <NewsAssessmentTab isGuest={isGuest} />;
       case 'history':
         return <TradeHistoryTab isGuest={isGuest} />;
       case 'accounts':
@@ -540,6 +543,33 @@ export default function Dashboard() {
             style={{ color: activeTab === 'audit' ? 'white' : '#94a3b8', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.85rem 0.75rem', background: activeTab === 'audit' ? '#334155' : 'transparent', borderRadius: '6px', border: 'none', cursor: 'pointer', textAlign: 'left', fontSize: '1rem', fontWeight: 600, minHeight: '44px' }}
           >
             <BrainCircuit size={18} color={activeTab === 'audit' ? '#38bdf8' : 'currentColor'} /> AI Review & Auto-Tune
+          </button>
+          <button 
+            id="nav-tab-news"
+            onClick={() => handleTabChange('news')} 
+            style={{ 
+              color: activeTab === 'news' ? 'white' : '#94a3b8', 
+              textDecoration: 'none', 
+              display: 'flex', 
+              alignItems: 'center', 
+              justifyContent: 'space-between',
+              padding: '0.85rem 0.75rem', 
+              background: activeTab === 'news' ? '#334155' : 'transparent', 
+              borderRadius: '6px', 
+              border: 'none', 
+              cursor: 'pointer', 
+              textAlign: 'left', 
+              fontSize: '1rem', 
+              fontWeight: 600, 
+              minHeight: '44px' 
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+              <Flame size={18} color={activeTab === 'news' ? '#ef4444' : 'currentColor'} /> News Assessment
+            </div>
+            <span style={{ background: 'rgba(239, 68, 68, 0.25)', color: '#f87171', border: '1px solid rgba(239, 68, 68, 0.5)', fontSize: '0.68rem', fontWeight: 800, padding: '1px 6px', borderRadius: '10px' }}>
+              AI
+            </span>
           </button>
           <button 
             onClick={() => handleTabChange('bots')} 

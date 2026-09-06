@@ -70,6 +70,7 @@ import ai_engine
 import ai_eval_harness
 import ai_strategy_reviewer
 import bot_leaderboard
+import news_service
 
 bot_manager = BotManager()
 
@@ -4020,6 +4021,208 @@ async def get_bot_leaderboard_endpoint(request: Request, force: bool = False):
 async def refresh_bot_leaderboard_endpoint(request: Request):
     require_admin(request)
     return bot_leaderboard.get_or_compute_leaderboard(force_refresh=True)
+
+# ==========================================
+# NEWS ASSESSMENT & ECONOMIC CALENDAR APIS
+# ==========================================
+
+class NewsAssessRequest(BaseModel):
+    cluster_hash: str
+    timestamp_utc: str
+    symbol: str = "XAUUSD"
+    currencies: Optional[List[str]] = []
+    events: List[Dict[str, Any]]
+    date_formatted_vn: Optional[str] = ""
+    time_formatted_vn: Optional[str] = ""
+    time_formatted_utc: Optional[str] = ""
+    user_notes: Optional[str] = ""
+
+class NewsShareTelegramRequest(BaseModel):
+    assessment_id: Optional[int] = None
+    cluster_hash: Optional[str] = None
+    symbol: Optional[str] = "XAUUSD"
+
+@app.get("/api/news/calendar")
+async def get_news_calendar_endpoint(
+    request: Request,
+    range: str = "thisweek",
+    currency: str = "all",
+    symbol: str = "XAUUSD"
+):
+    get_current_user(request)
+    raw_events = await news_service.fetch_forexfactory_raw_events(week_range=range)
+    clusters = news_service.cluster_red_news(raw_events)
+    
+    # Filter by currency if specified
+    if currency and currency.lower() != "all":
+        target_curr = currency.upper().strip()
+        clusters = [c for c in clusters if target_curr in c.get("currencies", [])]
+
+    # Populate assessment status from database
+    for c in clusters:
+        cluster_hash = c.get("id", "")
+        saved = database.get_news_assessment_by_cluster(cluster_hash, symbol)
+        if saved:
+            c["is_assessed"] = True
+            c["latest_assessment"] = saved
+
+    return {
+        "range": range,
+        "symbol": symbol.upper().strip(),
+        "total_clusters": len(clusters),
+        "clusters": clusters
+    }
+
+@app.post("/api/news/assess")
+async def assess_news_cluster_endpoint(req: NewsAssessRequest, request: Request):
+    require_admin(request)
+    try:
+        cluster_dict = {
+            "id": req.cluster_hash,
+            "timestamp_utc": req.timestamp_utc,
+            "date_formatted_vn": req.date_formatted_vn,
+            "time_formatted_vn": req.time_formatted_vn,
+            "time_formatted_utc": req.time_formatted_utc,
+            "events": req.events,
+            "currencies": req.currencies
+        }
+        
+        system_prompt, user_prompt = news_service.generate_news_cluster_prompt(
+            cluster_dict,
+            symbol=req.symbol,
+            user_notes=req.user_notes or ""
+        )
+
+        # Get active AI config
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT * FROM ai_providers_config WHERE id = 1")
+        raw_cfg = c.fetchone()
+        conn.close()
+        ai_config = dict(raw_cfg) if raw_cfg else {"active_provider": "qwen_api", "qwen_model": "qwen3.7-flash"}
+
+        provider = ai_config.get("active_provider", "qwen_api")
+        model_name = ai_config.get(f"{provider.split('_')[0]}_model", "default-model")
+
+        raw_report, latency_ms = await ai_engine.query_llm_text(ai_config, system_prompt, user_prompt, temperature=0.3)
+        parsed = news_service.parse_news_ai_response(raw_report)
+
+        # Save to SQLite
+        record_id = database.save_news_assessment(
+            cluster_hash=req.cluster_hash,
+            timestamp_utc=req.timestamp_utc,
+            symbol=req.symbol.upper().strip(),
+            currencies=req.currencies or [],
+            events=req.events,
+            volatility_level=parsed["volatility_level"],
+            expected_pips_range=parsed["expected_pips_range"],
+            trend_type=parsed["trend_type"],
+            prob_buy=parsed["prob_buy"],
+            prob_sell=parsed["prob_sell"],
+            scenario_better=parsed["scenario_better"],
+            scenario_worse=parsed["scenario_worse"],
+            bot_guidance=parsed["bot_guidance"],
+            analysis_markdown=parsed["analysis_markdown"],
+            ai_provider=provider,
+            ai_model=model_name,
+            latency_ms=latency_ms,
+            user_notes=req.user_notes or ""
+        )
+
+        return {
+            "status": "success",
+            "assessment_id": record_id,
+            "cluster_hash": req.cluster_hash,
+            "symbol": req.symbol.upper().strip(),
+            "metrics": {
+                "volatility_level": parsed["volatility_level"],
+                "expected_pips_range": parsed["expected_pips_range"],
+                "trend_type": parsed["trend_type"],
+                "prob_buy": parsed["prob_buy"],
+                "prob_sell": parsed["prob_sell"],
+                "scenario_better": parsed["scenario_better"],
+                "scenario_worse": parsed["scenario_worse"],
+                "bot_guidance": parsed["bot_guidance"]
+            },
+            "analysis_markdown": parsed["analysis_markdown"],
+            "ai_provider": provider,
+            "ai_model": model_name,
+            "latency_ms": latency_ms
+        }
+    except Exception as e:
+        log_message("NEWS_AI", "ERROR", f"Error in news assessment: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Lỗi phân tích AI: {str(e)}")
+
+@app.get("/api/news/assessments")
+async def get_news_assessments_endpoint(request: Request, limit: int = 50):
+    get_current_user(request)
+    assessments = database.get_recent_news_assessments(limit=limit)
+    return {"assessments": assessments}
+
+@app.get("/api/news/assessments/{assessment_id}")
+async def get_news_assessment_detail_endpoint(assessment_id: int, request: Request):
+    get_current_user(request)
+    item = database.get_news_assessment_by_id(assessment_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Không tìm thấy bản đánh giá này.")
+    return item
+
+@app.post("/api/news/share-telegram")
+async def share_news_telegram_endpoint(req: NewsShareTelegramRequest, request: Request):
+    require_admin(request)
+    assessment = None
+    if req.assessment_id:
+        assessment = database.get_news_assessment_by_id(req.assessment_id)
+    elif req.cluster_hash:
+        assessment = database.get_news_assessment_by_cluster(req.cluster_hash, req.symbol or "XAUUSD")
+
+    if not assessment:
+        raise HTTPException(status_code=404, detail="Không tìm thấy dữ liệu đánh giá để gửi.")
+
+    symbol = assessment.get("symbol", "XAUUSD")
+    volatility = assessment.get("volatility_level", "HIGH")
+    pips = assessment.get("expected_pips_range", "")
+    trend = assessment.get("trend_type", "")
+    p_buy = assessment.get("prob_buy", 50)
+    p_sell = assessment.get("prob_sell", 50)
+    sc_better = assessment.get("scenario_better", "")
+    sc_worse = assessment.get("scenario_worse", "")
+    guidance = assessment.get("bot_guidance", "")
+    events = assessment.get("events", [])
+    model = assessment.get("ai_model", "AI")
+    time_utc = assessment.get("timestamp_utc", "")
+
+    events_str = ""
+    for ev in events[:4]:
+        fc = ev.get("forecast") or "-"
+        pr = ev.get("previous") or "-"
+        events_str += f"  • <b>[{ev.get('country')}] {ev.get('title')}</b> (FC: {fc} | PR: {pr})\n"
+
+    trend_label = {
+        "1_WAY_TREND": "⚡ Xu Hướng 1 Chiều (Clean Trend Extension)",
+        "2_WAY_WHIPSAW": "🌪️ Biến Động 2 Chiều (Whipsaw / Quét 2 Đầu)",
+        "SWEEP_THEN_TREND": "🎯 Sweep Thanh Khoản Xong Đảo Chiều (Judas Swing)"
+    }.get(trend, trend)
+
+    telegram_msg = (
+        f"🚨 <b>[cTrader AI Hub] BÁO CÁO ĐÁNH GIÁ TIN ĐỎ (RED NEWS)</b>\n\n"
+        f"🎯 <b>Cặp phân tích:</b> #{symbol}\n"
+        f"⏰ <b>Thời điểm ra tin (UTC):</b> {time_utc}\n"
+        f"⚡ <b>Mức độ biến động:</b> <b>{volatility}</b> ({pips})\n"
+        f"📊 <b>Hình thái giá:</b> <b>{trend_label}</b>\n"
+        f"🎲 <b>Xác suất hướng đi:</b> 🟢 BUY <b>{p_buy}%</b> | 🔴 SELL <b>{p_sell}%</b>\n\n"
+        f"📋 <b>Cụm sự kiện cùng khung giờ:</b>\n{events_str}\n"
+        f"📈 <b>Kịch bản Số liệu Thực tế > Dự báo:</b>\n{sc_better}\n\n"
+        f"📉 <b>Kịch bản Số liệu Thực tế < Dự báo:</b>\n{sc_worse}\n\n"
+        f"🛡️ <b>Khuyến nghị cBot & Quản trị rủi ro:</b>\n{guidance}\n\n"
+        f"🤖 <i>Phân tích bởi {model} • cTrader AI Trading Hub</i>"
+    )
+
+    success = await send_telegram_server_notification(telegram_msg)
+    if not success:
+        raise HTTPException(status_code=500, detail="Không thể gửi thông báo qua Telegram. Vui lòng kiểm tra file telegram.env.")
+
+    return {"status": "success", "message": "Bản đánh giá tin tức đã được chia sẻ lên nhóm Telegram thành công!"}
 
 @app.get("/api/history")
 async def get_trade_history(

@@ -448,6 +448,32 @@ def init_db():
         )
     ''')
 
+    # Create News AI Assessments table
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS news_ai_assessments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cluster_hash TEXT NOT NULL,
+            timestamp_utc TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            currencies TEXT,
+            events_json TEXT NOT NULL,
+            volatility_level TEXT NOT NULL,
+            expected_pips_range TEXT,
+            trend_type TEXT NOT NULL,
+            prob_buy REAL NOT NULL,
+            prob_sell REAL NOT NULL,
+            scenario_better TEXT,
+            scenario_worse TEXT,
+            bot_guidance TEXT,
+            analysis_markdown TEXT NOT NULL,
+            ai_provider TEXT,
+            ai_model TEXT,
+            latency_ms INTEGER DEFAULT 0,
+            user_notes TEXT,
+            created_at TEXT NOT NULL
+        )
+    ''')
+
     # Performance B-Tree Indexes
     indexes = [
         "CREATE INDEX IF NOT EXISTS idx_positions_account_bot ON positions (account_id, bot_id)",
@@ -460,7 +486,9 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs (timestamp)",
         "CREATE INDEX IF NOT EXISTS idx_ai_eval_results_run_id ON ai_eval_results (run_id)",
         "CREATE INDEX IF NOT EXISTS idx_strategy_audits_created ON strategy_audits (created_at DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_leaderboard_created ON leaderboard_snapshots (created_at DESC)"
+        "CREATE INDEX IF NOT EXISTS idx_leaderboard_created ON leaderboard_snapshots (created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_news_assessments_cluster ON news_ai_assessments (cluster_hash, symbol)",
+        "CREATE INDEX IF NOT EXISTS idx_news_assessments_created ON news_ai_assessments (created_at DESC)"
     ]
     for idx_sql in indexes:
         try:
@@ -934,5 +962,114 @@ def get_latest_leaderboard_snapshot() -> dict:
     row = c.fetchone()
     conn.close()
     return dict(row) if row else None
+
+# ==========================================
+# NEWS AI ASSESSMENTS PERSISTENCE & HISTORY
+# ==========================================
+
+def save_news_assessment(
+    cluster_hash: str,
+    timestamp_utc: str,
+    symbol: str,
+    currencies: list,
+    events: list,
+    volatility_level: str,
+    expected_pips_range: str,
+    trend_type: str,
+    prob_buy: float,
+    prob_sell: float,
+    scenario_better: str,
+    scenario_worse: str,
+    bot_guidance: str,
+    analysis_markdown: str,
+    ai_provider: str,
+    ai_model: str,
+    latency_ms: int = 0,
+    user_notes: str = ""
+) -> int:
+    """
+    Saves an AI economic news assessment into SQLite and returns the record ID.
+    """
+    conn = get_db()
+    c = conn.cursor()
+    created_at = datetime.datetime.now().isoformat()
+    currencies_json = json.dumps(currencies, ensure_ascii=False)
+    events_json = json.dumps(events, ensure_ascii=False)
+
+    c.execute('''
+        INSERT INTO news_ai_assessments (
+            cluster_hash, timestamp_utc, symbol, currencies, events_json,
+            volatility_level, expected_pips_range, trend_type, prob_buy, prob_sell,
+            scenario_better, scenario_worse, bot_guidance, analysis_markdown,
+            ai_provider, ai_model, latency_ms, user_notes, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        cluster_hash, timestamp_utc, symbol.strip().upper(), currencies_json, events_json,
+        volatility_level, expected_pips_range, trend_type, prob_buy, prob_sell,
+        scenario_better, scenario_worse, bot_guidance, analysis_markdown,
+        ai_provider, ai_model, latency_ms, user_notes, created_at
+    ))
+    record_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return record_id
+
+def get_news_assessment_by_cluster(cluster_hash: str, symbol: str) -> Optional[dict]:
+    """Retrieves the latest assessment for a given news cluster and symbol."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('''
+        SELECT * FROM news_ai_assessments 
+        WHERE cluster_hash = ? AND symbol = ?
+        ORDER BY id DESC LIMIT 1
+    ''', (cluster_hash, symbol.strip().upper()))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    res = dict(row)
+    try:
+        res["currencies"] = json.loads(res.get("currencies") or "[]")
+        res["events"] = json.loads(res.get("events_json") or "[]")
+    except Exception:
+        pass
+    return res
+
+def get_news_assessment_by_id(assessment_id: int) -> Optional[dict]:
+    """Retrieves a specific assessment by its ID."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT * FROM news_ai_assessments WHERE id = ?', (assessment_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    res = dict(row)
+    try:
+        res["currencies"] = json.loads(res.get("currencies") or "[]")
+        res["events"] = json.loads(res.get("events_json") or "[]")
+    except Exception:
+        pass
+    return res
+
+def get_recent_news_assessments(limit: int = 50) -> List[dict]:
+    """Retrieves a list of recent assessments ordered by ID descending."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT * FROM news_ai_assessments ORDER BY id DESC LIMIT ?', (limit,))
+    rows = c.fetchall()
+    conn.close()
+    results = []
+    for r in rows:
+        item = dict(r)
+        try:
+            item["currencies"] = json.loads(item.get("currencies") or "[]")
+            item["events"] = json.loads(item.get("events_json") or "[]")
+        except Exception:
+            pass
+        results.append(item)
+    return results
+
 
 
