@@ -7,6 +7,7 @@ Automatically calculated every 12 hours (2x daily) or refreshed on-demand.
 """
 
 import json
+import re
 import datetime
 from typing import Dict, Any, List, Optional
 import database
@@ -16,6 +17,58 @@ from database import (
     get_latest_leaderboard_snapshot,
     log_message
 )
+
+def normalize_symbol(s: Optional[str]) -> str:
+    """Normalizes symbol string for robust cross-comparison across brokers and accounts."""
+    if not s:
+        return ""
+    s = s.strip().upper().replace("#", "").replace("/", "").replace(" ", "").replace("_", "").replace("-", "")
+    if s == "GOLD":
+        return "XAUUSD"
+    if "NDAQ" in s or "NAS" in s:
+        return "NDAQ100"
+    if "SPX" in s or "US500" in s:
+        return "SPX500"
+    if "US30" in s or "DJ30" in s or "DOW" in s:
+        return "US30"
+    if "JAPAN225" in s or "JP225" in s or "NI225" in s:
+        return "JAPAN225"
+    return s
+
+def clean_key(s: Optional[str]) -> str:
+    """Cleans an identifier string to lowercase alphanumeric characters."""
+    if not s:
+        return ""
+    return re.sub(r'[^a-zA-Z0-9]', '', str(s)).lower()
+
+def is_item_match_bot(item: Dict[str, Any], b: Dict[str, Any]) -> bool:
+    """Accurately checks if a trade or position item belongs to a specific bot instance."""
+    b_id_str = str(b["id"])
+    b_name = b.get("name", "")
+    b_key = clean_key(b_name)
+    b_sym = normalize_symbol(b.get("symbol"))
+    b_acc = str(b.get("account_id") or "").strip()
+
+    t_bot = str(item.get("bot_id") or "")
+    t_key = clean_key(t_bot)
+    t_sym = normalize_symbol(item.get("symbol"))
+    t_acc = str(item.get("account_id") or "").strip()
+
+    # 1. Symbol must match if both present (prevents cross-symbol trade pollution)
+    if b_sym and t_sym and b_sym != t_sym:
+        return False
+
+    # 2. Account ID must match if both present (prevents cross-account trade pollution)
+    if b_acc and t_acc and b_acc != t_acc:
+        return False
+
+    # 3. Match identifier: ID or normalized key
+    if t_bot == b_id_str or t_key == b_key:
+        return True
+    if len(b_key) > 5 and (b_key in t_key or t_key in b_key):
+        return True
+
+    return False
 
 def compute_bot_leaderboard() -> Dict[str, Any]:
     """
@@ -49,16 +102,8 @@ def compute_bot_leaderboard() -> Dict[str, Any]:
         b_status = b["status"]
         b_account = b["account_id"]
 
-        # Match history trades for this bot
-        bot_trades = [
-            t for t in raw_history
-            if str(t.get("bot_id")) == str(b_id)
-            or str(t.get("bot_id")) == b_name
-            or str(t.get("bot_id")) == b_name.replace(" ", "_")
-            or (b_name.startswith("Asian Range") and "Judas" in str(t.get("bot_id", "")))
-            or (b_name.startswith("Smart Trend") and "smart_trend" in str(t.get("bot_id", "")))
-            or (b_name.startswith("ORB") and "ORB" in str(t.get("bot_id", "")))
-        ]
+        # Match history trades for this bot using accurate symbol- and account-aware comparison
+        bot_trades = [t for t in raw_history if is_item_match_bot(t, b)]
 
         total_trades = len(bot_trades)
         wins = [t for t in bot_trades if (t.get('pnl') or 0.0) > 0.0 or (t.get('pnl_pips') or 0.0) > 0.0]
@@ -73,13 +118,7 @@ def compute_bot_leaderboard() -> Dict[str, Any]:
         closed_pnl_pips = round(sum(float(t.get('pnl_pips') or 0.0) for t in bot_trades), 1)
 
         # Active positions for this bot
-        bot_positions = [
-            p for p in raw_positions
-            if str(p.get("bot_id")) == str(b_id)
-            or str(p.get("bot_id")) == b_name
-            or str(p.get("bot_id")) == b_name.replace(" ", "_")
-            or (b_name.startswith("Asian Range") and "Judas" in str(p.get("bot_id", "")))
-        ]
+        bot_positions = [p for p in raw_positions if is_item_match_bot(p, b)]
         floating_pnl_usd = round(sum(float(p.get('pnl') or 0.0) for p in bot_positions), 2)
         floating_pnl_pips = round(sum(float(p.get('pnl_pips') or 0.0) for p in bot_positions), 1)
 

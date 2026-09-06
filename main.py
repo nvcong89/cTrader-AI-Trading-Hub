@@ -2185,18 +2185,33 @@ async def dashboard_view(request: Request):
             distinct_dates = [datetime.datetime.now().strftime("%Y-%m-%d")]
         
         # Get active account IDs & labels
-        c.execute("SELECT account_id, account_label, account_type FROM accounts")
+        c.execute("SELECT account_id, account_label, account_type, broker, balance, equity FROM accounts")
         acc_rows = [dict(r) for r in c.fetchall()]
-        acc_label_map = {
-            str(a["account_id"]): f"Account #{a['account_id']} ({a.get('account_type', 'DEMO')})"
-            for a in acc_rows
-        }
+        acc_label_map = {}
+        for a in acc_rows:
+            acc_id_str = str(a["account_id"])
+            label = a.get('account_label') or f"Account #{acc_id_str}"
+            acc_type = (a.get('account_type') or 'DEMO').upper()
+            acc_label_map[acc_id_str] = f"{label} ({acc_type})"
         
-        unique_acc_ids = sorted(list(set(str(r["account_id"]) for r in pnl_by_acc_raw)))
+        # Accounts that have trade history
+        history_acc_ids = set(str(r["account_id"]) for r in pnl_by_acc_raw if r.get("account_id") and str(r.get("account_id")) != "Other")
+        
+        # Accounts that have running bots
+        c.execute("SELECT DISTINCT account_id FROM bot_instances WHERE status IN ('RUNNING', 'STARTING') AND account_id IS NOT NULL")
+        running_acc_ids = set(str(r["account_id"]) for r in c.fetchall())
+
+        # Select relevant accounts for chart (has trade history, running bot, or balance > 0)
+        chart_acc_ids = []
+        for a_id in sorted(list(history_acc_ids)):
+            chart_acc_ids.append(a_id)
         for a in acc_rows:
             a_id_str = str(a["account_id"])
-            if a_id_str not in unique_acc_ids:
-                unique_acc_ids.append(a_id_str)
+            if a_id_str not in chart_acc_ids:
+                if a_id_str in running_acc_ids or float(a.get("balance") or 0.0) > 0:
+                    chart_acc_ids.append(a_id_str)
+
+        unique_acc_ids = chart_acc_ids if chart_acc_ids else [str(a["account_id"]) for a in acc_rows[:5]]
 
         # Build daily matrix & cumulative matrix
         accounts_daily = {acc: [0.0] * len(distinct_dates) for acc in unique_acc_ids}

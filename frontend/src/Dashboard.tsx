@@ -261,7 +261,7 @@ export default function Dashboard() {
   const renderTab = () => {
     switch (activeTab) {
       case 'overview':
-        return <OverviewTab data={data} />;
+        return <OverviewTab data={data} isGuest={isGuest} onNavigateTab={handleTabChange} />;
       case 'positions':
         return <ActivePositionsTab isGuest={isGuest} />;
       case 'bots':
@@ -275,11 +275,11 @@ export default function Dashboard() {
       case 'history':
         return <TradeHistoryTab isGuest={isGuest} />;
       case 'accounts':
-        return !isGuest ? <AccountManagerTab isGuest={isGuest} onNavigateToBots={() => handleTabChange('bots')} /> : <OverviewTab data={data} />;
+        return !isGuest ? <AccountManagerTab isGuest={isGuest} onNavigateToBots={() => handleTabChange('bots')} /> : <OverviewTab data={data} isGuest={isGuest} onNavigateTab={handleTabChange} />;
       case 'logs':
         return <SystemLogsTab isGuest={isGuest} />;
       default:
-        return <OverviewTab data={data} />;
+        return <OverviewTab data={data} isGuest={isGuest} onNavigateTab={handleTabChange} />;
     }
   };
 

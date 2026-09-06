@@ -13,7 +13,10 @@ import {
   Clock,
   CheckCircle2,
   AlertTriangle,
-  Layers
+  Layers,
+  ArrowUpRight,
+  ArrowDownRight,
+  Cpu
 } from 'lucide-react';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend);
@@ -21,6 +24,7 @@ ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, T
 interface OverviewProps {
   data: any;
   isGuest?: boolean;
+  onNavigateTab?: (tab: any) => void;
 }
 
 interface BotRankingItem {
@@ -61,12 +65,24 @@ interface LeaderboardData {
   rankings: BotRankingItem[];
 }
 
-export default function OverviewTab({ data, isGuest = false }: OverviewProps) {
+// Currency format helper with commas & sign
+const formatCurrency = (val: number | string | undefined, forceSign: boolean = false): string => {
+  const num = Number(val || 0);
+  const formatted = Math.abs(num).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (forceSign) {
+    return num > 0 ? `+$${formatted}` : num < 0 ? `-$${formatted}` : `$${formatted}`;
+  }
+  return num < 0 ? `-$${formatted}` : `$${formatted}`;
+};
+
+export default function OverviewTab({ data, isGuest = false, onNavigateTab }: OverviewProps) {
   const [leaderboard, setLeaderboard] = useState<LeaderboardData | null>(null);
   const [isLoadingLeaderboard, setIsLoadingLeaderboard] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [countdownText, setCountdownText] = useState<string>('--:--:--');
   const [refreshMessage, setRefreshMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [chartMetric, setChartMetric] = useState<'daily' | 'cumulative'>('daily');
+  const [rankingFilter, setRankingFilter] = useState<'all' | 'running' | 'profitable'>('all');
 
   // Fetch Leaderboard
   const fetchLeaderboard = async (force: boolean = false) => {
@@ -76,11 +92,10 @@ export default function OverviewTab({ data, isGuest = false }: OverviewProps) {
       setIsLoadingLeaderboard(true);
     }
     try {
-      const url = force
-        ? `${getApiBaseUrl()}/api/leaderboard/refresh`
-        : `${getApiBaseUrl()}/api/leaderboard`;
-      const method = force ? 'post' : 'get';
-      const res = await axios[method](url, force ? {} : { withCredentials: true }, { withCredentials: true });
+      const res = force
+        ? await axios.post(`${getApiBaseUrl()}/api/leaderboard/refresh`, {}, { withCredentials: true })
+        : await axios.get(`${getApiBaseUrl()}/api/leaderboard`, { withCredentials: true });
+
       if (res.data) {
         setLeaderboard(res.data);
         if (force) {
@@ -91,7 +106,8 @@ export default function OverviewTab({ data, isGuest = false }: OverviewProps) {
     } catch (err: any) {
       console.error('Failed to fetch leaderboard:', err);
       if (force) {
-        setRefreshMessage({ type: 'error', text: 'Lỗi khi cập nhật bảng xếp hạng' });
+        const msg = err.response?.data?.detail || 'Lỗi khi cập nhật bảng xếp hạng';
+        setRefreshMessage({ type: 'error', text: typeof msg === 'string' ? msg : 'Lỗi khi cập nhật bảng xếp hạng' });
         setTimeout(() => setRefreshMessage(null), 4000);
       }
     } finally {
@@ -129,16 +145,22 @@ export default function OverviewTab({ data, isGuest = false }: OverviewProps) {
     return () => clearInterval(interval);
   }, [leaderboard?.next_update_at]);
 
-  const [chartMetric, setChartMetric] = useState<'daily' | 'cumulative'>('daily');
-
+  // Extended Modern High-Contrast Palette
   const COLOR_PALETTE = [
-    { border: '#10b981', bg: 'rgba(16, 185, 129, 0.15)' }, // Emerald Green
+    { border: '#38bdf8', bg: 'rgba(56, 189, 248, 0.15)' }, // Sky Blue
+    { border: '#10b981', bg: 'rgba(16, 185, 129, 0.15)' }, // Emerald
     { border: '#a855f7', bg: 'rgba(168, 85, 247, 0.15)' }, // Purple
     { border: '#f59e0b', bg: 'rgba(245, 158, 11, 0.15)' }, // Amber Gold
-    { border: '#ec4899', bg: 'rgba(236, 72, 153, 0.15)' }, // Pink Rose
+    { border: '#ec4899', bg: 'rgba(236, 72, 153, 0.15)' }, // Rose Pink
     { border: '#06b6d4', bg: 'rgba(6, 182, 212, 0.15)' },  // Teal
     { border: '#6366f1', bg: 'rgba(99, 102, 241, 0.15)' }, // Indigo
-    { border: '#84cc16', bg: 'rgba(132, 204, 22, 0.15)' }  // Lime
+    { border: '#84cc16', bg: 'rgba(132, 204, 22, 0.15)' }, // Lime
+    { border: '#f97316', bg: 'rgba(249, 115, 22, 0.15)' }, // Orange
+    { border: '#14b8a6', bg: 'rgba(20, 184, 166, 0.15)' }, // Cyan
+    { border: '#e11d48', bg: 'rgba(225, 29, 72, 0.15)' },  // Ruby
+    { border: '#8b5cf6', bg: 'rgba(139, 92, 246, 0.15)' }, // Violet
+    { border: '#eab308', bg: 'rgba(234, 179, 8, 0.15)' },  // Yellow
+    { border: '#0ea5e9', bg: 'rgba(14, 165, 233, 0.15)' }  // Ocean
   ];
 
   // Construct Multi-Account Datasets
@@ -150,7 +172,7 @@ export default function OverviewTab({ data, isGuest = false }: OverviewProps) {
       const datasets: any[] = [
         // 1. Total Fleet Series
         {
-          label: isDaily ? '⭐ Toàn Fleet (Total Daily PnL)' : '⭐ Toàn Fleet (Cumulative Growth)',
+          label: isDaily ? '⭐ Toàn Fleet (Daily PnL)' : '⭐ Toàn Fleet (Cumulative Growth)',
           data: isDaily ? data.pnl_by_account.totals_daily : data.pnl_by_account.totals_cumulative,
           borderColor: '#38bdf8',
           backgroundColor: 'rgba(56, 189, 248, 0.15)',
@@ -161,7 +183,7 @@ export default function OverviewTab({ data, isGuest = false }: OverviewProps) {
         }
       ];
 
-      // 2. Individual Account Series
+      // 2. Individual Account Series (Only for accounts present in unique_accounts)
       const uniqueAccounts = data.pnl_by_account.unique_accounts || [];
       uniqueAccounts.forEach((accId: string, idx: number) => {
         const color = COLOR_PALETTE[idx % COLOR_PALETTE.length];
@@ -218,9 +240,9 @@ export default function OverviewTab({ data, isGuest = false }: OverviewProps) {
           },
           usePointStyle: true,
           pointStyle: 'circle',
-          padding: 12,
-          boxWidth: 8,
-          boxHeight: 8
+          padding: 10,
+          boxWidth: 7,
+          boxHeight: 7
         }
       },
       tooltip: {
@@ -255,9 +277,27 @@ export default function OverviewTab({ data, isGuest = false }: OverviewProps) {
     }
   };
 
+  // Calculations for UI
+  const totalFloatingPnl = (data?.positions || []).reduce((acc: number, p: any) => acc + (Number(p.pnl) || 0), 0);
+  const dailyPnl = Number(data?.summary?.daily_pnl || 0);
+  const tradesToday = data?.summary?.trades_today || 0;
+  const runningBotsCount = data?.bots ? data.bots.filter((b: any) => b.status === 'RUNNING').length : 0;
+  const totalBotsCount = data?.bots?.length || 0;
+  const openPositionsCount = data?.summary?.open_positions || 0;
+  const vpsCpu = data?.vps_cpu_percent !== undefined ? data.vps_cpu_percent : null;
+  const vpsRam = data?.vps_ram_percent !== undefined ? data.vps_ram_percent : null;
+
+  // Filtered leaderboard rankings
+  const allRankings = leaderboard?.rankings || [];
+  const filteredRankings = allRankings.filter((bot) => {
+    if (rankingFilter === 'running') return bot.status === 'RUNNING';
+    if (rankingFilter === 'profitable') return bot.total_pnl_usd > 0;
+    return true;
+  });
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem', paddingBottom: '2rem' }}>
-      {/* Header Title */}
+      {/* Header Title & Status */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
         <div>
           <h1 style={{ margin: '0 0 0.35rem 0', fontSize: '1.6rem', fontWeight: 800, color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
@@ -268,62 +308,176 @@ export default function OverviewTab({ data, isGuest = false }: OverviewProps) {
           </p>
         </div>
 
-        {refreshMessage && (
-          <div
-            style={{
-              padding: '0.5rem 1rem',
-              borderRadius: '8px',
-              fontSize: '0.8rem',
-              fontWeight: 600,
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              background: refreshMessage.type === 'success' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-              border: `1px solid ${refreshMessage.type === 'success' ? '#10b981' : '#ef4444'}`,
-              color: refreshMessage.type === 'success' ? '#34d399' : '#f87171'
-            }}
-          >
-            {refreshMessage.type === 'success' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
-            {refreshMessage.text}
-          </div>
-        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+          {/* VPS Health Badge */}
+          {vpsCpu !== null && vpsRam !== null && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                background: 'rgba(15, 23, 42, 0.7)',
+                border: '1px solid rgba(255, 255, 255, 0.1)',
+                padding: '0.45rem 0.85rem',
+                borderRadius: '8px',
+                fontSize: '0.75rem',
+                color: '#cbd5e1'
+              }}
+              title="Tải phần cứng máy chủ VPS"
+            >
+              <Cpu size={14} color="#38bdf8" />
+              <span>VPS:</span>
+              <strong style={{ color: vpsCpu > 70 ? '#f87171' : vpsCpu > 40 ? '#fbbf24' : '#34d399' }}>
+                CPU {vpsCpu}%
+              </strong>
+              <span style={{ color: '#475569' }}>•</span>
+              <strong style={{ color: vpsRam > 80 ? '#f87171' : '#38bdf8' }}>
+                RAM {vpsRam}%
+              </strong>
+            </div>
+          )}
+
+          {refreshMessage && (
+            <div
+              style={{
+                padding: '0.45rem 0.85rem',
+                borderRadius: '8px',
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                background: refreshMessage.type === 'success' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                border: `1px solid ${refreshMessage.type === 'success' ? '#10b981' : '#ef4444'}`,
+                color: refreshMessage.type === 'success' ? '#34d399' : '#f87171'
+              }}
+            >
+              {refreshMessage.type === 'success' ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
+              {refreshMessage.text}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* KPI Grid */}
+      {/* Executive KPI Grid (6 Cards) */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem' }}>
+        {/* Card 1: Total Balance */}
         <div style={{ background: '#0b1120', padding: '1.2rem', borderRadius: '10px', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
-          <div style={{ color: '#64748b', fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase' }}>Total Balance</div>
-          <div style={{ fontSize: '1.5rem', fontWeight: 800, color: '#f8fafc', marginTop: '0.25rem' }}>${data?.summary?.account_balance || '0.00'}</div>
-          <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: '0.2rem' }}>Số dư ký quỹ sàn</div>
-        </div>
-
-        <div style={{ background: '#0b1120', padding: '1.2rem', borderRadius: '10px', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
-          <div style={{ color: '#64748b', fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase' }}>Total Equity</div>
-          <div style={{ fontSize: '1.5rem', fontWeight: 800, color: '#38bdf8', marginTop: '0.25rem' }}>${data?.summary?.account_equity || '0.00'}</div>
-          <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: '0.2rem' }}>Vốn thực tế thời gian thực</div>
-        </div>
-
-        <div style={{ background: '#0b1120', padding: '1.2rem', borderRadius: '10px', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
-          <div style={{ color: '#64748b', fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase' }}>Open Positions</div>
-          <div style={{ fontSize: '1.5rem', fontWeight: 800, color: (data?.summary?.open_positions || 0) > 0 ? '#34d399' : '#f8fafc', marginTop: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-            <Zap size={20} color={(data?.summary?.open_positions || 0) > 0 ? '#34d399' : '#64748b'} />
-            {data?.summary?.open_positions || 0}
+          <div style={{ color: '#64748b', fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            Total Balance
           </div>
-          <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: '0.2rem' }}>Lệnh đang chạy thị trường</div>
+          <div style={{ fontSize: '1.5rem', fontWeight: 800, color: '#f8fafc', marginTop: '0.25rem' }}>
+            {formatCurrency(data?.summary?.account_balance)}
+          </div>
+          <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: '0.2rem' }}>
+            Số dư ký quỹ toàn sàn
+          </div>
         </div>
 
+        {/* Card 2: Total Equity */}
         <div style={{ background: '#0b1120', padding: '1.2rem', borderRadius: '10px', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
-          <div style={{ color: '#64748b', fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase' }}>Active Running Bots</div>
+          <div style={{ color: '#64748b', fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            Total Equity
+          </div>
+          <div style={{ fontSize: '1.5rem', fontWeight: 800, color: '#38bdf8', marginTop: '0.25rem' }}>
+            {formatCurrency(data?.summary?.account_equity)}
+          </div>
+          <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: '0.2rem' }}>
+            Vốn thực tế thời gian thực
+          </div>
+        </div>
+
+        {/* Card 3: Today's P&L */}
+        <div
+          onClick={() => onNavigateTab?.('history')}
+          style={{
+            background: '#0b1120',
+            padding: '1.2rem',
+            borderRadius: '10px',
+            border: dailyPnl !== 0 ? (dailyPnl > 0 ? '1px solid rgba(16, 185, 129, 0.35)' : '1px solid rgba(239, 68, 68, 0.35)') : '1px solid rgba(255, 255, 255, 0.08)',
+            cursor: onNavigateTab ? 'pointer' : 'default',
+            transition: 'transform 0.15s, border-color 0.15s'
+          }}
+          title="Nhấn để xem Lịch sử giao dịch"
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ color: '#64748b', fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              Today's P&L
+            </div>
+            {dailyPnl !== 0 && (
+              dailyPnl > 0 ? <ArrowUpRight size={16} color="#34d399" /> : <ArrowDownRight size={16} color="#f87171" />
+            )}
+          </div>
+          <div style={{ fontSize: '1.5rem', fontWeight: 800, color: dailyPnl > 0 ? '#34d399' : dailyPnl < 0 ? '#f87171' : '#f8fafc', marginTop: '0.25rem' }}>
+            {formatCurrency(dailyPnl, true)}
+          </div>
+          <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: '0.2rem' }}>
+            Khớp {tradesToday} lệnh hôm nay
+          </div>
+        </div>
+
+        {/* Card 4: Open Positions */}
+        <div
+          onClick={() => onNavigateTab?.('positions')}
+          style={{
+            background: '#0b1120',
+            padding: '1.2rem',
+            borderRadius: '10px',
+            border: openPositionsCount > 0 ? '1px solid rgba(56, 189, 248, 0.35)' : '1px solid rgba(255, 255, 255, 0.08)',
+            cursor: onNavigateTab ? 'pointer' : 'default',
+            transition: 'transform 0.15s, border-color 0.15s'
+          }}
+          title="Nhấn để xem các Lệnh đang mở"
+        >
+          <div style={{ color: '#64748b', fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            Open Positions
+          </div>
+          <div style={{ fontSize: '1.5rem', fontWeight: 800, color: openPositionsCount > 0 ? '#34d399' : '#f8fafc', marginTop: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+            <Zap size={20} color={openPositionsCount > 0 ? '#34d399' : '#64748b'} />
+            {openPositionsCount}
+          </div>
+          <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: '0.2rem' }}>
+            {openPositionsCount > 0 ? (
+              <span>
+                Float: <strong style={{ color: totalFloatingPnl >= 0 ? '#34d399' : '#f87171' }}>{formatCurrency(totalFloatingPnl, true)}</strong>
+              </span>
+            ) : (
+              'Không có lệnh mở'
+            )}
+          </div>
+        </div>
+
+        {/* Card 5: Active Running Bots */}
+        <div
+          onClick={() => onNavigateTab?.('bots')}
+          style={{
+            background: '#0b1120',
+            padding: '1.2rem',
+            borderRadius: '10px',
+            border: runningBotsCount > 0 ? '1px solid rgba(168, 85, 247, 0.35)' : '1px solid rgba(255, 255, 255, 0.08)',
+            cursor: onNavigateTab ? 'pointer' : 'default',
+            transition: 'transform 0.15s, border-color 0.15s'
+          }}
+          title="Nhấn để quản lý cBot"
+        >
+          <div style={{ color: '#64748b', fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            Active Running Bots
+          </div>
           <div style={{ fontSize: '1.5rem', fontWeight: 800, color: '#a855f7', marginTop: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
             <Bot size={20} color="#a855f7" />
-            {data?.bots ? data.bots.filter((b: any) => b.status === 'RUNNING').length : 0}
-            <span style={{ fontSize: '0.85rem', color: '#64748b', fontWeight: 500 }}>/ {data?.bots?.length || 0}</span>
+            {runningBotsCount}
+            <span style={{ fontSize: '0.85rem', color: '#64748b', fontWeight: 500 }}>/ {totalBotsCount}</span>
           </div>
-          <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: '0.2rem' }}>Tiến trình cBot đang kích hoạt</div>
+          <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: '0.2rem' }}>
+            Tiến trình cBot đang kích hoạt
+          </div>
         </div>
 
+        {/* Card 6: Fleet Win Rate */}
         <div style={{ background: '#0b1120', padding: '1.2rem', borderRadius: '10px', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
-          <div style={{ color: '#64748b', fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase' }}>Fleet Win Rate</div>
+          <div style={{ color: '#64748b', fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            Fleet Win Rate
+          </div>
           <div style={{ fontSize: '1.5rem', fontWeight: 800, color: (leaderboard?.fleet_win_rate || 0) >= 50 ? '#34d399' : '#f87171', marginTop: '0.25rem' }}>
             {leaderboard?.fleet_win_rate !== undefined ? `${leaderboard.fleet_win_rate}%` : '--'}
           </div>
@@ -371,29 +525,81 @@ export default function OverviewTab({ data, isGuest = false }: OverviewProps) {
             </div>
           </div>
 
-          {/* Action Recalculate Now Button */}
-          <button
-            onClick={() => fetchLeaderboard(true)}
-            disabled={isRefreshing || isGuest}
-            style={{
-              background: 'rgba(56, 189, 248, 0.1)',
-              border: '1px solid rgba(56, 189, 248, 0.3)',
-              color: '#38bdf8',
-              padding: '0.45rem 1rem',
-              borderRadius: '8px',
-              fontSize: '0.78rem',
-              fontWeight: 700,
-              cursor: isRefreshing || isGuest ? 'not-allowed' : 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              transition: 'all 0.2s ease',
-              opacity: isGuest ? 0.5 : 1
-            }}
-          >
-            <RefreshCw size={14} className={isRefreshing ? 'live-pulse' : ''} />
-            {isRefreshing ? 'Đang Tính Toán...' : 'Cập Nhật Ngay (Recalculate)'}
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+            {/* Quick Filter Buttons */}
+            <div style={{ display: 'flex', background: 'rgba(15, 23, 42, 0.8)', padding: '2px', borderRadius: '6px', border: '1px solid #334155' }}>
+              <button
+                onClick={() => setRankingFilter('all')}
+                style={{
+                  background: rankingFilter === 'all' ? '#0284c7' : 'transparent',
+                  color: rankingFilter === 'all' ? '#ffffff' : '#94a3b8',
+                  border: 'none',
+                  borderRadius: '4px',
+                  padding: '0.3rem 0.6rem',
+                  fontSize: '0.72rem',
+                  fontWeight: 700,
+                  cursor: 'pointer'
+                }}
+              >
+                Tất cả ({allRankings.length})
+              </button>
+              <button
+                onClick={() => setRankingFilter('running')}
+                style={{
+                  background: rankingFilter === 'running' ? '#0284c7' : 'transparent',
+                  color: rankingFilter === 'running' ? '#ffffff' : '#94a3b8',
+                  border: 'none',
+                  borderRadius: '4px',
+                  padding: '0.3rem 0.6rem',
+                  fontSize: '0.72rem',
+                  fontWeight: 700,
+                  cursor: 'pointer'
+                }}
+              >
+                Đang chạy ({allRankings.filter((b) => b.status === 'RUNNING').length})
+              </button>
+              <button
+                onClick={() => setRankingFilter('profitable')}
+                style={{
+                  background: rankingFilter === 'profitable' ? '#0284c7' : 'transparent',
+                  color: rankingFilter === 'profitable' ? '#ffffff' : '#94a3b8',
+                  border: 'none',
+                  borderRadius: '4px',
+                  padding: '0.3rem 0.6rem',
+                  fontSize: '0.72rem',
+                  fontWeight: 700,
+                  cursor: 'pointer'
+                }}
+              >
+                Có lãi ({allRankings.filter((b) => b.total_pnl_usd > 0).length})
+              </button>
+            </div>
+
+            {/* Action Recalculate Now Button */}
+            <button
+              onClick={() => !isGuest && fetchLeaderboard(true)}
+              disabled={isRefreshing || isGuest}
+              title={isGuest ? 'Chế độ Guest chỉ xem' : 'Kích hoạt tính toán lại Bảng xếp hạng định lượng ngay lập tức'}
+              style={{
+                background: isGuest ? 'rgba(100, 116, 139, 0.2)' : 'rgba(56, 189, 248, 0.1)',
+                border: isGuest ? '1px solid rgba(255, 255, 255, 0.1)' : '1px solid rgba(56, 189, 248, 0.3)',
+                color: isGuest ? '#64748b' : '#38bdf8',
+                padding: '0.45rem 1rem',
+                borderRadius: '8px',
+                fontSize: '0.78rem',
+                fontWeight: 700,
+                cursor: isRefreshing || isGuest ? 'not-allowed' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                transition: 'all 0.2s ease',
+                opacity: isGuest ? 0.5 : 1
+              }}
+            >
+              <RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} />
+              {isRefreshing ? 'Đang Tính Toán...' : 'Cập Nhật Ngay'}
+            </button>
+          </div>
         </div>
 
         {/* Podium Top 3 Champions Cards */}
@@ -427,6 +633,9 @@ export default function OverviewTab({ data, isGuest = false }: OverviewProps) {
                 </div>
                 <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
                   {leaderboard.rankings[0].symbol} ({leaderboard.rankings[0].timeframe}) • Win Rate: <strong style={{ color: '#34d399' }}>{leaderboard.rankings[0].win_rate}%</strong>
+                  {leaderboard.rankings[0].total_trades === 0 && (
+                    <span style={{ marginLeft: '6px', color: '#94a3b8', fontStyle: 'italic' }}>(Chưa có lệnh)</span>
+                  )}
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.3rem' }}>
                   <span style={{ fontSize: '0.72rem', color: '#64748b' }}>Quant Score:</span>
@@ -461,6 +670,9 @@ export default function OverviewTab({ data, isGuest = false }: OverviewProps) {
                 </div>
                 <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
                   {leaderboard.rankings[1].symbol} ({leaderboard.rankings[1].timeframe}) • Win Rate: <strong style={{ color: leaderboard.rankings[1].win_rate >= 50 ? '#34d399' : '#f87171' }}>{leaderboard.rankings[1].win_rate}%</strong>
+                  {leaderboard.rankings[1].total_trades === 0 && (
+                    <span style={{ marginLeft: '6px', color: '#94a3b8', fontStyle: 'italic' }}>(Chưa có lệnh)</span>
+                  )}
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.3rem' }}>
                   <span style={{ fontSize: '0.72rem', color: '#64748b' }}>Quant Score:</span>
@@ -495,6 +707,9 @@ export default function OverviewTab({ data, isGuest = false }: OverviewProps) {
                 </div>
                 <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
                   {leaderboard.rankings[2].symbol} ({leaderboard.rankings[2].timeframe}) • Win Rate: <strong style={{ color: leaderboard.rankings[2].win_rate >= 50 ? '#34d399' : '#f87171' }}>{leaderboard.rankings[2].win_rate}%</strong>
+                  {leaderboard.rankings[2].total_trades === 0 && (
+                    <span style={{ marginLeft: '6px', color: '#94a3b8', fontStyle: 'italic' }}>(Chưa có lệnh)</span>
+                  )}
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.3rem' }}>
                   <span style={{ fontSize: '0.72rem', color: '#64748b' }}>Quant Score:</span>
@@ -526,11 +741,12 @@ export default function OverviewTab({ data, isGuest = false }: OverviewProps) {
               {isLoadingLeaderboard ? (
                 <tr>
                   <td colSpan={10} style={{ textAlign: 'center', padding: '2rem', color: '#64748b' }}>
+                    <RefreshCw size={18} className="animate-spin" style={{ display: 'inline', marginRight: '6px' }} />
                     Đang nạp dữ liệu bảng xếp hạng...
                   </td>
                 </tr>
-              ) : leaderboard?.rankings && leaderboard.rankings.length > 0 ? (
-                leaderboard.rankings.map((bot) => (
+              ) : filteredRankings && filteredRankings.length > 0 ? (
+                filteredRankings.map((bot) => (
                   <tr
                     key={bot.bot_id}
                     style={{
@@ -588,12 +804,15 @@ export default function OverviewTab({ data, isGuest = false }: OverviewProps) {
 
                     {/* Trades W/L */}
                     <td style={{ padding: '0.6rem', color: '#cbd5e1' }}>
-                      <strong>{bot.total_trades}</strong> <span style={{ fontSize: '0.72rem', color: '#94a3b8' }}>({bot.total_wins}W - {bot.total_losses}L)</span>
+                      <strong>{bot.total_trades}</strong>{' '}
+                      <span style={{ fontSize: '0.72rem', color: '#94a3b8' }}>
+                        ({bot.total_wins}W - {bot.total_losses}L)
+                      </span>
                     </td>
 
                     {/* Win Rate */}
-                    <td style={{ padding: '0.6rem', fontWeight: 700, color: bot.win_rate >= 50 ? '#34d399' : '#f87171' }}>
-                      {bot.win_rate}%
+                    <td style={{ padding: '0.6rem', fontWeight: 700, color: bot.win_rate >= 50 ? '#34d399' : bot.total_trades === 0 ? '#94a3b8' : '#f87171' }}>
+                      {bot.total_trades > 0 ? `${bot.win_rate}%` : '--'}
                     </td>
 
                     {/* Profit Factor */}
@@ -602,11 +821,11 @@ export default function OverviewTab({ data, isGuest = false }: OverviewProps) {
                     </td>
 
                     {/* Total PnL */}
-                    <td style={{ padding: '0.6rem', fontWeight: 700, color: bot.total_pnl_usd >= 0 ? '#34d399' : '#f87171' }}>
-                      ${Number(bot.total_pnl_usd).toFixed(2)}
+                    <td style={{ padding: '0.6rem', fontWeight: 700, color: bot.total_pnl_usd > 0 ? '#34d399' : bot.total_pnl_usd < 0 ? '#f87171' : '#cbd5e1' }}>
+                      {formatCurrency(bot.total_pnl_usd, true)}
                       {bot.floating_pnl_usd !== 0 && (
                         <span style={{ fontSize: '0.7rem', color: bot.floating_pnl_usd > 0 ? '#34d399' : '#f87171', display: 'block' }}>
-                          Float: {bot.floating_pnl_usd > 0 ? `+${bot.floating_pnl_usd}` : bot.floating_pnl_usd}
+                          Float: {formatCurrency(bot.floating_pnl_usd, true)}
                         </span>
                       )}
                     </td>
@@ -651,7 +870,7 @@ export default function OverviewTab({ data, isGuest = false }: OverviewProps) {
               ) : (
                 <tr>
                   <td colSpan={10} style={{ textAlign: 'center', padding: '1.5rem', color: '#64748b' }}>
-                    Chưa có dữ liệu bot nào trong hệ thống.
+                    Không tìm thấy bot nào phù hợp với bộ lọc đã chọn.
                   </td>
                 </tr>
               )}
@@ -660,8 +879,9 @@ export default function OverviewTab({ data, isGuest = false }: OverviewProps) {
         </div>
       </div>
 
-      {/* Intraday Multi-Account Chart & Accounts Layout */}
+      {/* Intraday Multi-Account Chart & Linked Accounts Layout */}
       <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
+        {/* Left: Multi-Account Chart */}
         <div style={{ flex: 2, minWidth: '340px', background: '#0b1120', padding: '1.5rem', borderRadius: '10px', border: '1px solid rgba(255, 255, 255, 0.08)', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
             <div>
@@ -716,34 +936,72 @@ export default function OverviewTab({ data, isGuest = false }: OverviewProps) {
           </div>
         </div>
 
-        <div style={{ flex: 1, minWidth: '280px', background: '#0b1120', padding: '1.5rem', borderRadius: '10px', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
-          <h2 style={{ marginTop: 0, fontSize: '1.05rem', fontWeight: 700, color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-            <Layers size={18} color="#a855f7" /> Linked Accounts
-          </h2>
-          <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '0.825rem' }}>
-            <thead>
-              <tr style={{ color: '#64748b', borderBottom: '1px solid rgba(255, 255, 255, 0.08)' }}>
-                <th style={{ padding: '0.6rem 0' }}>Account ID</th>
-                <th style={{ padding: '0.6rem 0' }}>Equity</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data?.accounts ? (
-                data.accounts.map((acc: any) => (
-                  <tr key={acc.account_id} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.04)' }}>
-                    <td style={{ padding: '0.6rem 0', fontWeight: 600, color: '#38bdf8' }}>{acc.account_id}</td>
-                    <td style={{ padding: '0.6rem 0', fontWeight: 700, color: '#f8fafc' }}>
-                      ${acc.equity !== undefined ? acc.equity.toFixed(2) : '0.00'}
+        {/* Right: Linked Accounts Card */}
+        <div style={{ flex: 1, minWidth: '300px', background: '#0b1120', padding: '1.25rem', borderRadius: '10px', border: '1px solid rgba(255, 255, 255, 0.08)', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h2 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700, color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <Layers size={18} color="#a855f7" /> Linked Accounts
+            </h2>
+            <span style={{ fontSize: '0.75rem', color: '#94a3b8', background: 'rgba(255, 255, 255, 0.05)', padding: '2px 8px', borderRadius: '10px' }}>
+              {data?.accounts?.length || 0} Accounts
+            </span>
+          </div>
+
+          <div style={{ maxHeight: '280px', overflowY: 'auto', paddingRight: '4px' }}>
+            <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
+              <thead>
+                <tr style={{ color: '#64748b', borderBottom: '1px solid rgba(255, 255, 255, 0.08)', position: 'sticky', top: 0, background: '#0b1120' }}>
+                  <th style={{ padding: '0.5rem 0' }}>Tài Khoản</th>
+                  <th style={{ padding: '0.5rem 0' }}>Loại</th>
+                  <th style={{ padding: '0.5rem 0', textAlign: 'right' }}>Equity / Vốn</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data?.accounts && data.accounts.length > 0 ? (
+                  data.accounts.map((acc: any) => {
+                    const isLive = (acc.account_type || '').toLowerCase() === 'live';
+                    return (
+                      <tr key={acc.account_id} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                        <td style={{ padding: '0.55rem 0' }}>
+                          <div style={{ fontWeight: 700, color: '#38bdf8' }}>{acc.account_id}</div>
+                          <div style={{ fontSize: '0.7rem', color: '#94a3b8' }}>
+                            {acc.account_label || acc.broker || 'cTrader Account'}
+                          </div>
+                        </td>
+                        <td style={{ padding: '0.55rem 0' }}>
+                          <span
+                            style={{
+                              fontSize: '0.68rem',
+                              fontWeight: 800,
+                              padding: '2px 6px',
+                              borderRadius: '4px',
+                              background: isLive ? 'rgba(245, 158, 11, 0.15)' : 'rgba(148, 163, 184, 0.15)',
+                              color: isLive ? '#fbbf24' : '#94a3b8',
+                              border: `1px solid ${isLive ? 'rgba(245, 158, 11, 0.3)' : 'rgba(148, 163, 184, 0.2)'}`
+                            }}
+                          >
+                            {isLive ? 'LIVE' : 'DEMO'}
+                          </span>
+                        </td>
+                        <td style={{ padding: '0.55rem 0', textAlign: 'right', fontWeight: 700, color: '#f8fafc' }}>
+                          <div>{formatCurrency(acc.equity)}</div>
+                          <div style={{ fontSize: '0.7rem', color: '#64748b' }}>
+                            Bal: {formatCurrency(acc.balance)}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan={3} style={{ color: '#64748b', padding: '1rem 0', textAlign: 'center' }}>
+                      Không có tài khoản liên kết
                     </td>
                   </tr>
-                ))
-              ) : (
-                <tr>
-                  <td colSpan={2} style={{ color: '#64748b', padding: '1rem 0' }}>Không có tài khoản liên kết</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
