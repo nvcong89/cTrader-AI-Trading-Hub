@@ -278,6 +278,8 @@ def normalize_symbol(symbol: Optional[str], broker: Optional[str] = None) -> str
 class BotManager:
     def __init__(self):
         self.active_processes = {}
+        self.crash_restart_attempts = {}
+        self.crash_restart_last_success = {}
         os.makedirs("logs", exist_ok=True)
 
     def is_process_running(self, pid: Optional[int]) -> bool:
@@ -421,6 +423,61 @@ class BotManager:
                     conn.close()
                 except Exception:
                     pass
+
+    def check_crashed_running_bots(self) -> List[Dict[str, Any]]:
+        """
+        Scans all bot instances in database with status 'RUNNING'.
+        If a bot's PID is dead or invalid, records it as crashed, updates its status
+        in SQLite to 'STOPPED', and returns details of all crashed bots for Telegram
+        alerts and auto-restart handling.
+        """
+        conn = None
+        crashed = []
+        now_ts = time.time()
+        try:
+            conn = get_db()
+            c = conn.cursor()
+            c.execute("""
+                SELECT id, name, symbol, timeframe, account_id, pid, status
+                FROM bot_instances 
+                WHERE status = 'RUNNING'
+            """)
+            running_bots = [dict(r) for r in c.fetchall()]
+
+            for bot in running_bots:
+                pid = bot.get('pid')
+                bot_id = bot['id']
+
+                # If bot was running stably for > 10 minutes (600s), reset its crash counter
+                last_start = self.crash_restart_last_success.get(bot_id, 0)
+                if last_start > 0 and (now_ts - last_start > 600):
+                    self.crash_restart_attempts[bot_id] = 0
+
+                if not self.is_process_running(pid):
+                    c.execute("UPDATE bot_instances SET status = 'STOPPED', pid = NULL WHERE id = ?", (bot_id,))
+                    self.active_processes.pop(bot_id, None)
+                    
+                    current_attempts = self.crash_restart_attempts.get(bot_id, 0) + 1
+                    self.crash_restart_attempts[bot_id] = current_attempts
+                    
+                    bot_info = dict(bot)
+                    bot_info["dead_pid"] = pid
+                    bot_info["attempt"] = current_attempts
+                    crashed.append(bot_info)
+                    log_message(f"BOT_{bot_id}", "WARN", f"[Watchdog] Detected CRASHED bot #{bot_id} '{bot.get('name')}' (Stale PID {pid}). Attempt: {current_attempts}/3")
+
+            if crashed:
+                conn.commit()
+        except Exception as ex:
+            log_message("SYSTEM", "WARN", f"[Watchdog] Error scanning crashed bots: {ex}")
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+        return crashed
 
     def start_bot(self, bot_id: int):
         conn = None
@@ -607,6 +664,7 @@ class BotManager:
             
             # Keep process object alive to prevent stdin EOF
             self.active_processes[bot_id] = process
+            self.crash_restart_last_success[bot_id] = time.time()
             
             log_message(f"BOT_{bot_id}", "INFO", f"Bot started with PID {process.pid}")
             return True, "Bot started successfully"
@@ -615,6 +673,8 @@ class BotManager:
             return False, f"Failed to start bot: {str(e)}"
 
     def stop_bot(self, bot_id: int):
+        # Reset crash attempts on manual stop so watchdog won't treat manual stop as crash
+        self.crash_restart_attempts[bot_id] = 0
         conn = None
         raw_bot = None
         try:

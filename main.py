@@ -176,14 +176,14 @@ def load_telegram_config():
 
     return bot_token, chat_id
 
-async def send_telegram_server_notification(message: str):
+async def send_telegram_server_notification(message: str) -> bool:
     """
     Sends an asynchronous Telegram notification from the server backend.
     """
     try:
         bot_token, chat_id = load_telegram_config()
         if not bot_token or not chat_id:
-            return
+            return False
 
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         payload = {
@@ -192,9 +192,15 @@ async def send_telegram_server_notification(message: str):
             "parse_mode": "HTML"
         }
         async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.post(url, json=payload)
+            resp = await client.post(url, json=payload)
+            if resp.status_code == 200:
+                return True
+            else:
+                print(f"[Telegram Server Notification Error] HTTP {resp.status_code}: {resp.text}")
+                return False
     except Exception as e:
         print(f"[Telegram Server Notification Error] {e}")
+        return False
 
 # Dynamic Authentication Config with Multi-User Support & Password-Hashed Invalidation
 def load_all_credentials() -> Dict[str, Dict[str, str]]:
@@ -681,6 +687,207 @@ async def auto_refresh_open_api_tokens_loop():
             log_message("OPEN_API", "ERROR", f"[Auto-Refresh] Unexpected error in auto-refresh loop: {ex}")
             await asyncio.sleep(3600)
 
+async def bot_watchdog_loop():
+    """
+    Scans all bot instances every 30 seconds.
+    If a bot has status 'RUNNING' but its OS process is dead, alerts Telegram
+    immediately and executes safe auto-restart (up to 3 retries).
+    """
+    # Safety pause of 45s on boot to allow bots to complete startup
+    await asyncio.sleep(45)
+    
+    while True:
+        try:
+            crashed_bots = await asyncio.to_thread(bot_manager.check_crashed_running_bots)
+            for bot in crashed_bots:
+                bot_id = bot['id']
+                bot_name = bot.get('name', f"Bot #{bot_id}")
+                symbol = bot.get('symbol', 'N/A')
+                timeframe = bot.get('timeframe', 'N/A')
+                acc_id = bot.get('account_id', 'N/A')
+                attempts = bot.get('attempt', 1)
+                
+                log_message(f"BOT_{bot_id}", "WARN", f"[Watchdog] Crash detected: #{bot_id} {bot_name} ({symbol}) Attempt: {attempts}/3")
+                
+                if attempts <= 3:
+                    # Send immediate Telegram Alert
+                    try:
+                        await send_telegram_server_notification(
+                            f"🚨 <b>CẢNH BÁO: BOT BỊ DỪNG ĐỘT NGỘT!</b>\n"
+                            f"🤖 Bot: <b>#{bot_id} - {bot_name}</b>\n"
+                            f"📈 Cặp tiền: <code>{symbol}</code> ({timeframe})\n"
+                            f"💼 Tài khoản: <code>{acc_id}</code>\n"
+                            f"⚠️ Tiến trình hệ điều hành (PID) bị tắt bất thường.\n"
+                            f"🔄 <b>Đang tự động khởi động lại (Lần {attempts}/3)...</b>"
+                        )
+                    except Exception as tg_err:
+                        log_message("SYSTEM", "WARN", f"[Watchdog] Telegram error: {tg_err}")
+                    
+                    # Brief pause before restarting to allow system resources to free
+                    await asyncio.sleep(5)
+                    
+                    # Auto-Restart
+                    success, restart_msg = await asyncio.to_thread(bot_manager.start_bot, bot_id)
+                    if success:
+                        log_message(f"BOT_{bot_id}", "INFO", f"[Watchdog] Successfully auto-restarted bot #{bot_id}")
+                        try:
+                            await send_telegram_server_notification(
+                                f"🟢 <b>TỰ ĐỘNG PHỤC HỒI BOT THÀNH CÔNG!</b>\n"
+                                f"🤖 Bot: <b>#{bot_id} - {bot_name}</b>\n"
+                                f"📈 Cặp tiền: <code>{symbol}</code> ({timeframe})\n"
+                                f"🟢 Trạng thái: Đã khởi chạy lại và đang hoạt động bình thường."
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        log_message(f"BOT_{bot_id}", "ERROR", f"[Watchdog] Failed to restart bot #{bot_id}: {restart_msg}")
+                        if attempts >= 3:
+                            try:
+                                await send_telegram_server_notification(
+                                    f"🛑 <b>NGỪNG TỰ ĐỘNG KHỞI ĐỘNG LẠI BOT #{bot_id}</b>\n"
+                                    f"🤖 Bot: <b>#{bot_id} - {bot_name}</b>\n"
+                                    f"❌ Đã thử lại {attempts} lần nhưng không thành công: <code>{restart_msg}</code>\n"
+                                    f"💡 <b>Khuyến nghị</b>: Vui lòng kiểm tra log hoặc cTrader CLI trên VPS!"
+                                )
+                            except Exception:
+                                pass
+                        else:
+                            try:
+                                await send_telegram_server_notification(
+                                    f"⚠️ <b>KHỞI ĐỘNG LẠI LẦN {attempts} THẤT BẠI</b>\n"
+                                    f"🤖 Bot: <b>#{bot_id} - {bot_name}</b>\n"
+                                    f"❌ Chi tiết: <code>{restart_msg}</code>\n"
+                                    f"Sẽ tiếp tục thử lại ở chu kỳ tiếp theo (tối đa 3 lần)."
+                                )
+                            except Exception:
+                                pass
+
+            await asyncio.sleep(30)
+        except Exception as ex:
+            log_message("SYSTEM", "ERROR", f"[Watchdog] Error in bot watchdog loop: {ex}")
+            await asyncio.sleep(30)
+
+def compile_morning_fleet_report() -> str:
+    """
+    Compiles a concise, beautiful HTML morning fleet status report for Telegram.
+    """
+    conn = get_db()
+    running_bots = []
+    stopped_bots = []
+    try:
+        c = conn.cursor()
+        c.execute("SELECT id, name, symbol, timeframe, account_id, pid, status FROM bot_instances ORDER BY id ASC")
+        all_bots = [dict(r) for r in c.fetchall()]
+        
+        for b in all_bots:
+            pid = b.get('pid')
+            if b.get('status') == 'RUNNING' and bot_manager.is_process_running(pid):
+                running_bots.append(b)
+            else:
+                stopped_bots.append(b)
+    finally:
+        conn.close()
+
+    total_count = len(all_bots)
+    running_count = len(running_bots)
+    now_str = datetime.datetime.now().strftime('%d/%m/%Y %H:%M')
+
+    try:
+        import psutil
+        cpu_pct = psutil.cpu_percent(interval=None)
+        ram_pct = psutil.virtual_memory().percent
+        sys_str = f"CPU {cpu_pct:.0f}% | RAM {ram_pct:.0f}%"
+    except Exception:
+        sys_str = "Bình thường"
+
+    running_lines = []
+    for b in running_bots:
+        bid = b['id']
+        bname = b.get('name')
+        bsym = b.get('symbol')
+        btf = b.get('timeframe')
+        bacc = b.get('account_id')
+        running_lines.append(f"• <b>#{bid} {bname}</b> | <code>{bsym}</code> ({btf}) | Acc: <code>{bacc}</code>")
+    running_str = '\n'.join(running_lines) if running_lines else '• <i>Hiện tại không có bot nào đang chạy.</i>'
+
+    if stopped_bots:
+        stopped_summary = f"⚠️ <b>LƯU Ý: Có {len(stopped_bots)} bot đang dừng.</b>"
+    else:
+        stopped_summary = "✅ <i>Toàn bộ bot trong hệ thống đều đang chạy.</i>"
+
+    try:
+        from account_config import get_account_details_with_stats
+        accounts_data = get_account_details_with_stats()
+        active_acc_ids = {str(b.get('account_id')) for b in running_bots}
+        seen_acc_ids = set()
+        total_balance = 0.0
+        total_equity = 0.0
+        acc_lines = []
+
+        for acc in accounts_data:
+            acc_id = str(acc.get('account_id', ''))
+            if not acc_id or acc_id in seen_acc_ids:
+                continue
+            seen_acc_ids.add(acc_id)
+            bal = float(acc.get('balance') or 0.0)
+            eq = float(acc.get('equity') or bal)
+            if acc_id in active_acc_ids or bal > 0.0:
+                total_balance += bal
+                total_equity += eq
+                broker = acc.get('broker', 'Broker')
+                acc_type = (acc.get('account_type') or 'live').upper()
+                acc_lines.append(f"• Acc <code>{acc_id}</code> ({broker} {acc_type}): <b>${bal:,.2f}</b> (Eq: ${eq:,.2f})")
+
+        acc_summary_text = f"💰 <b>TỔNG VỐN TOÀN FLEET:</b>\n• Tổng Balance: <b>${total_balance:,.2f}</b> | Tổng Equity: <b>${total_equity:,.2f}</b>"
+        if acc_lines:
+            acc_summary_text += '\n' + '\n'.join(acc_lines[:6])
+            if len(acc_lines) > 6:
+                acc_summary_text += f"\n• <i>...và {len(acc_lines) - 6} tài khoản khác</i>"
+    except Exception as e:
+        acc_summary_text = f"💰 <i>Dữ liệu tài khoản: Không khả dụng ({e})</i>"
+
+    report = f"""🌅 <b>BÁO CÁO HOẠT ĐỘNG FLEET (06:00 AM)</b>
+📅 Thời gian: <b>{now_str}</b>
+🖥️ Tải VPS: <b>{sys_str}</b>
+
+🤖 <b>TÌNH TRẠNG BOT:</b>
+• Đang chạy: <b>{running_count} / {total_count} bot</b>
+{running_str}
+
+{stopped_summary}
+
+{acc_summary_text}"""
+    return report
+
+async def daily_morning_report_loop():
+    """
+    Sends a daily fleet status summary report to Telegram every morning at 06:00 AM (local time).
+    """
+    while True:
+        try:
+            now = datetime.datetime.now()
+            target = now.replace(hour=6, minute=0, second=0, microsecond=0)
+            if now >= target:
+                target += datetime.timedelta(days=1)
+                
+            delay_seconds = (target - now).total_seconds()
+            log_message("SYSTEM", "INFO", f"[Morning Report] Next scheduled 06:00 AM report in {delay_seconds/3600:.1f} hours ({target.strftime('%Y-%m-%d %H:%M:%S')}).")
+            
+            await asyncio.sleep(delay_seconds)
+            
+            # 06:00 AM has arrived! Send report
+            log_message("SYSTEM", "INFO", "[Morning Report] Generating daily 06:00 AM fleet report...")
+            report_html = await asyncio.to_thread(compile_morning_fleet_report)
+            await send_telegram_server_notification(report_html)
+            log_message("SYSTEM", "INFO", "[Morning Report] Daily report sent to Telegram.")
+            
+            # Brief pause of 60s to move past 06:00:00 mark
+            await asyncio.sleep(60)
+            
+        except Exception as ex:
+            log_message("SYSTEM", "ERROR", f"[Morning Report] Error in morning report loop: {ex}")
+            await asyncio.sleep(300)
+
 def cleanup_stale_positions_on_startup():
     """
     Startup cleanup: deletes all open positions in the DB belonging to accounts
@@ -738,6 +945,8 @@ async def startup_event():
     asyncio.create_task(database_maintenance_loop())
     asyncio.create_task(leaderboard_scheduler_loop())
     asyncio.create_task(auto_refresh_open_api_tokens_loop())
+    asyncio.create_task(bot_watchdog_loop())
+    asyncio.create_task(daily_morning_report_loop())
     
     # Send Telegram Startup Alert
     try:
@@ -1442,6 +1651,27 @@ async def api_send_telegram_relay(data: TelegramRelayRequest):
         return {"status": "success"}
     except Exception as ex:
         return {"status": "error", "error": str(ex)}
+
+@app.post("/api/telegram/send-morning-report")
+async def api_send_morning_report_endpoint(request: Request):
+    """
+    Manually triggers compiling and sending the 06:00 AM Fleet Report to Telegram.
+    Can be used by admins to test formatting and verify status on demand.
+    """
+    require_admin(request)
+    try:
+        report_html = await asyncio.to_thread(compile_morning_fleet_report)
+        success = await send_telegram_server_notification(report_html)
+        if success:
+            log_message("SYSTEM", "INFO", "Manual morning fleet status report sent to Telegram by admin.")
+            return {"status": "success", "message": "Báo cáo trạng thái fleet đã được gửi về Telegram thành công."}
+        else:
+            raise HTTPException(status_code=500, detail="Không thể gửi báo cáo qua Telegram. Vui lòng kiểm tra cấu hình telegram.env.")
+    except HTTPException:
+        raise
+    except Exception as ex:
+        log_message("SYSTEM", "ERROR", f"Error sending morning report to Telegram: {ex}")
+        raise HTTPException(status_code=500, detail=str(ex))
 
 _cbots_cache = None
 _cbots_cache_time = 0.0

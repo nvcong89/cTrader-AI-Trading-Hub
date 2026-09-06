@@ -26,7 +26,8 @@ import {
   GripVertical,
   ShieldCheck,
   Layers,
-  Key
+  Key,
+  Bell
 } from 'lucide-react';
 import ParameterStudioModal from './ParameterStudioModal';
 
@@ -195,6 +196,7 @@ export default function BotManagerTab({ data, refreshData, isGuest = false, onNa
 
   const [bulkLoading, setBulkLoading] = useState<{ action: 'start' | 'stop' | 'restart'; fleet: 'live' | 'demo' } | null>(null);
   const [bulkModalFleet, setBulkModalFleet] = useState<'live' | 'demo' | null>(null);
+  const [sendingMorningReport, setSendingMorningReport] = useState<boolean>(false);
   const [orderedBots, setOrderedBots] = useState<BotInstance[]>(data?.bots || []);
   const [draggedBotId, setDraggedBotId] = useState<number | null>(null);
   const [dragOverBotId, setDragOverBotId] = useState<number | null>(null);
@@ -469,6 +471,24 @@ export default function BotManagerTab({ data, refreshData, isGuest = false, onNa
       showBanner('error', formatErrorMessage(err.response?.data?.detail, 'Lỗi khi kích hoạt Smart Restart.'));
     } finally {
       setBulkLoading(null);
+    }
+  };
+
+  // Manual Trigger: Send Morning Fleet Status Report to Telegram
+  const handleSendMorningReport = async () => {
+    if (isGuest) return;
+    setSendingMorningReport(true);
+    try {
+      const res = await axios.post(
+        `${getApiBaseUrl()}/api/telegram/send-morning-report`,
+        {},
+        { withCredentials: true }
+      );
+      showBanner('success', res.data.message || 'Báo cáo hoạt động fleet 6h sáng đã được gửi về Telegram!');
+    } catch (err: any) {
+      showBanner('error', formatErrorMessage(err.response?.data?.detail, 'Lỗi khi gửi báo cáo về Telegram.'));
+    } finally {
+      setSendingMorningReport(false);
     }
   };
 
@@ -1288,6 +1308,36 @@ export default function BotManagerTab({ data, refreshData, isGuest = false, onNa
             }}
           >
             <RefreshCw size={16} /> Refresh
+          </button>
+
+          <button
+            id="btn-send-morning-report"
+            onClick={handleSendMorningReport}
+            disabled={sendingMorningReport || isGuest}
+            title={isGuest ? "Chế độ Guest chỉ xem" : "Gửi thử nghiệm báo cáo hoạt động fleet 6h sáng về Telegram"}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.45rem',
+              padding: '0.65rem 1rem',
+              background: isGuest ? 'rgba(100, 116, 139, 0.3)' : 'linear-gradient(135deg, rgba(56, 189, 248, 0.15), rgba(14, 165, 233, 0.3))',
+              border: isGuest ? '1px solid rgba(255, 255, 255, 0.1)' : '1px solid rgba(56, 189, 248, 0.45)',
+              borderRadius: '8px',
+              color: isGuest ? '#94a3b8' : '#38bdf8',
+              cursor: isGuest || sendingMorningReport ? 'not-allowed' : 'pointer',
+              fontWeight: 700,
+              fontSize: '0.875rem',
+              boxShadow: isGuest ? 'none' : '0 4px 14px rgba(14, 165, 233, 0.2)',
+              opacity: isGuest ? 0.5 : 1,
+              transition: 'transform 0.15s, box-shadow 0.15s'
+            }}
+          >
+            {sendingMorningReport ? (
+              <RefreshCw size={16} className="animate-spin" />
+            ) : (
+              <Bell size={16} />
+            )}
+            <span>Báo cáo 6h sáng</span>
           </button>
 
           <button
