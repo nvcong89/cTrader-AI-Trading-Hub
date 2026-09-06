@@ -41,6 +41,19 @@ interface AccountItem {
   last_updated?: string;
 }
 
+interface TokenStatus {
+  has_open_api?: boolean;
+  has_refresh_token?: boolean;
+  status?: string;
+  status_text?: string;
+  status_color?: string;
+  age_days?: number;
+  remaining_days?: number;
+  needs_refresh?: boolean;
+  last_refreshed?: string | null;
+  next_scheduled_refresh?: string | null;
+}
+
 interface ProfileItem {
   id: string;
   profile_name: string;
@@ -55,6 +68,7 @@ interface ProfileItem {
     environment?: string;
     redirect_uri?: string;
     last_refreshed?: string;
+    token_status?: TokenStatus;
   };
   accounts?: any[];
 }
@@ -949,9 +963,54 @@ export default function AccountManagerTab({ isGuest: _isGuest = false, onNavigat
                           <span style={{ fontFamily: 'monospace', color: '#a855f7' }}>{prof.open_api?.access_token || '••••••••'}</span>
                         </div>
                         {prof.open_api?.last_refreshed && (
-                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: '#64748b' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: '#64748b', marginBottom: '0.25rem' }}>
                             <span>Làm mới gần nhất:</span>
-                            <span>{new Date(prof.open_api.last_refreshed).toLocaleDateString()}</span>
+                            <span>{new Date(prof.open_api.last_refreshed).toLocaleDateString()} {new Date(prof.open_api.last_refreshed).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                          </div>
+                        )}
+
+                        {/* Token Status & Auto-Refresh Badge */}
+                        {prof.open_api?.token_status && prof.open_api.token_status.has_open_api && (
+                          <div style={{
+                            marginTop: '0.35rem',
+                            padding: '0.35rem 0.5rem',
+                            borderRadius: '4px',
+                            background: 'rgba(15, 23, 42, 0.65)',
+                            border: `1px solid ${prof.open_api.token_status.status_color || '#334155'}40`,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '0.25rem'
+                          }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                                <Clock size={11} color={prof.open_api.token_status.status_color || '#38bdf8'} />
+                                <span style={{
+                                  fontSize: '0.68rem',
+                                  fontWeight: 600,
+                                  color: prof.open_api.token_status.status_color || '#38bdf8'
+                                }}>
+                                  {prof.open_api.token_status.status_text}
+                                </span>
+                              </div>
+                              <span style={{
+                                fontSize: '0.62rem',
+                                padding: '0.1rem 0.35rem',
+                                borderRadius: '3px',
+                                background: prof.open_api.refresh_token ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                                color: prof.open_api.refresh_token ? '#34d399' : '#f87171',
+                                border: `1px solid ${prof.open_api.refresh_token ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`
+                              }}>
+                                {prof.open_api.refresh_token ? 'Auto-Refresh: Bật' : 'Thiếu Refresh Token'}
+                              </span>
+                            </div>
+                            {prof.open_api.token_status.next_scheduled_refresh && prof.open_api.refresh_token && (
+                              <div style={{ fontSize: '0.65rem', color: '#64748b', display: 'flex', justifyContent: 'space-between' }}>
+                                <span>Tự động gia hạn kế tiếp:</span>
+                                <span style={{ color: '#94a3b8' }}>
+                                  {new Date(prof.open_api.token_status.next_scheduled_refresh).toLocaleDateString()}
+                                </span>
+                              </div>
+                            )}
                           </div>
                         )}
                       </>

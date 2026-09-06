@@ -329,8 +329,86 @@ def sync_accounts_to_database(conn: Optional[sqlite3.Connection] = None) -> int:
 
     return synced_count
 
+def get_profile_token_status(profile: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Calculates token age, remaining days, expiration status, and auto-refresh readiness for a profile.
+    Validity is 30 days (Spotware standard). Proactive refresh threshold is 15 days.
+    """
+    oa = profile.get("open_api") or {}
+    has_oa = bool(oa.get("client_id") and oa.get("access_token"))
+    has_refresh_token = bool(oa.get("refresh_token"))
+    last_refreshed_str = oa.get("last_refreshed")
+
+    if not has_oa:
+        return {
+            "has_open_api": False,
+            "has_refresh_token": False,
+            "status": "unconfigured",
+            "status_text": "Chưa cấu hình",
+            "status_color": "#94a3b8",
+            "age_days": 0.0,
+            "remaining_days": 0.0,
+            "needs_refresh": False,
+            "last_refreshed": None,
+            "next_scheduled_refresh": None
+        }
+
+    age_days = 0.0
+    remaining_days = 30.0
+    next_scheduled_str = None
+
+    if last_refreshed_str:
+        try:
+            clean_iso = last_refreshed_str.replace("Z", "+00:00") if "Z" in last_refreshed_str else last_refreshed_str
+            dt = datetime.datetime.fromisoformat(clean_iso)
+            now_dt = datetime.datetime.now(dt.tzinfo) if dt.tzinfo is not None else datetime.datetime.now()
+            elapsed_secs = (now_dt - dt).total_seconds()
+            age_days = max(0.0, elapsed_secs / 86400.0)
+            remaining_days = max(0.0, 30.0 - age_days)
+            next_refresh_dt = dt + datetime.timedelta(days=15)
+            next_scheduled_str = next_refresh_dt.isoformat()
+        except Exception as e:
+            print(f"[account_config] Error parsing last_refreshed '{last_refreshed_str}': {e}")
+            age_days = 15.0
+            remaining_days = 15.0
+    else:
+        age_days = 15.0
+        remaining_days = 15.0
+
+    needs_refresh = (age_days >= 15.0) and has_refresh_token
+
+    if remaining_days <= 0.0:
+        status = "expired"
+        status_text = "Đã hết hạn"
+        status_color = "#ef4444"
+    elif remaining_days <= 5.0:
+        status = "critical"
+        status_text = f"Sắp hết hạn ({remaining_days:.0f} ngày)"
+        status_color = "#ef4444"
+    elif remaining_days <= 15.0:
+        status = "due_refresh"
+        status_text = f"Chuẩn bị gia hạn ({remaining_days:.0f} ngày)"
+        status_color = "#f59e0b"
+    else:
+        status = "valid"
+        status_text = f"Còn {remaining_days:.0f} ngày"
+        status_color = "#10b981"
+
+    return {
+        "has_open_api": True,
+        "has_refresh_token": has_refresh_token,
+        "status": status,
+        "status_text": status_text,
+        "status_color": status_color,
+        "age_days": round(age_days, 1),
+        "remaining_days": round(remaining_days, 1),
+        "needs_refresh": needs_refresh,
+        "last_refreshed": last_refreshed_str,
+        "next_scheduled_refresh": next_scheduled_str
+    }
+
 def sanitize_profiles_for_api(profiles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Sanitizes sensitive passwords and secrets for public API output."""
+    """Sanitizes sensitive passwords and secrets for public API output and enriches with token status."""
     sanitized = []
     for p in profiles:
         p_copy = dict(p)
@@ -343,6 +421,10 @@ def sanitize_profiles_for_api(profiles: List[Dict[str, Any]]) -> List[Dict[str, 
             if oa_copy.get("access_token"):
                 tok = oa_copy["access_token"]
                 oa_copy["access_token"] = tok[:6] + "..." + tok[-4:] if len(tok) > 12 else "••••••••"
+            if oa_copy.get("refresh_token"):
+                ref_tok = oa_copy["refresh_token"]
+                oa_copy["refresh_token"] = ref_tok[:6] + "..." + ref_tok[-4:] if len(ref_tok) > 12 else "••••••••"
+            oa_copy["token_status"] = get_profile_token_status(p)
             p_copy["open_api"] = oa_copy
         sanitized.append(p_copy)
     return sanitized
@@ -719,6 +801,7 @@ def refresh_profile_open_api_token(profile_id: str) -> Dict[str, Any]:
             new_refresh_token = res.get("refreshToken", refresh_token)
             expires_in = res.get("expiresIn", 2592000)
 
+            now_iso = datetime.datetime.now().isoformat()
             # Update profile in ctrader_accounts.json
             cfg = load_accounts_config()
             for p in cfg.get("profiles", []):
@@ -727,7 +810,7 @@ def refresh_profile_open_api_token(profile_id: str) -> Dict[str, Any]:
                         p["open_api"] = {}
                     p["open_api"]["access_token"] = new_access_token
                     p["open_api"]["refresh_token"] = new_refresh_token
-                    p["open_api"]["last_refreshed"] = datetime.datetime.now().isoformat()
+                    p["open_api"]["last_refreshed"] = now_iso
                     break
             save_accounts_config(cfg)
 
@@ -735,7 +818,12 @@ def refresh_profile_open_api_token(profile_id: str) -> Dict[str, Any]:
                 "status": "success",
                 "message": "Token refreshed successfully.",
                 "expires_in": expires_in,
-                "access_token_masked": new_access_token[:6] + "..." + new_access_token[-4:]
+                "access_token_masked": new_access_token[:6] + "..." + new_access_token[-4:],
+                "profile_id": profile_id,
+                "profile_name": profile.get("profile_name", profile_id),
+                "ctid_email": profile.get("ctid_email", ""),
+                "last_refreshed": now_iso,
+                "remaining_days": 30.0
             }
         else:
             err_code = res.get("errorCode", "UNKNOWN_ERROR")

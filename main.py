@@ -603,6 +603,84 @@ async def leaderboard_scheduler_loop():
         except Exception as ex:
             log_message("SYSTEM", "ERROR", f"Error in leaderboard scheduler loop: {ex}")
 
+async def auto_refresh_open_api_tokens_loop():
+    """
+    Automatically checks and refreshes cTrader Open API tokens for all profiles.
+    Runs every 12 hours. Triggers proactive refresh when token age >= 15 days (15 days before expiry).
+    Automatically retries up to 3 times with 1h delay if Spotware server/network fails.
+    Sends Telegram success and critical alerts.
+    """
+    # Initial pause of 30 seconds after server boot
+    await asyncio.sleep(30)
+    
+    while True:
+        try:
+            from account_config import get_all_profiles, get_profile_token_status, refresh_profile_open_api_token
+            profiles = get_all_profiles(enabled_only=True)
+            for p in profiles:
+                prof_id = p.get("id")
+                prof_name = p.get("profile_name", prof_id)
+                oa = p.get("open_api") or {}
+
+                # Only process profiles that have client_id and refresh_token
+                if not oa.get("client_id") or not oa.get("refresh_token"):
+                    continue
+
+                status_info = get_profile_token_status(p)
+                if status_info.get("needs_refresh"):
+                    log_message("OPEN_API", "INFO", f"[Auto-Refresh] Token for profile '{prof_name}' reached {status_info.get('age_days')} days old. Executing automated refresh...")
+                    
+                    retry_count = 0
+                    max_retries = 3
+                    refresh_success = False
+                    
+                    while retry_count < max_retries and not refresh_success:
+                        res = await asyncio.to_thread(refresh_profile_open_api_token, prof_id)
+                        if res.get("status") == "success":
+                            refresh_success = True
+                            masked_token = res.get("access_token_masked", "••••••••")
+                            log_message("OPEN_API", "INFO", f"[Auto-Refresh] Token refreshed successfully for '{prof_name}' ({masked_token}). Valid for another 30 days.")
+                            
+                            # Send Telegram Notification
+                            try:
+                                await send_telegram_server_notification(
+                                    f"🔑 <b>TỰ ĐỘNG GIA HẠN TOKEN OPEN API THÀNH CÔNG</b>\n"
+                                    f"👤 Hồ sơ: <b>{prof_name}</b> (<code>{p.get('ctid_email')}</code>)\n"
+                                    f"🔒 Access Token mới: <code>{masked_token}</code>\n"
+                                    f"⏳ Thời hạn mới: <b>30 ngày</b>\n"
+                                    f"🔄 Lần tự động gia hạn kế tiếp: <b>Sau 15 ngày</b>\n"
+                                    f"🟢 Trạng thái: Đã cập nhật & Lưu trữ an toàn."
+                                )
+                            except Exception as tg_err:
+                                log_message("OPEN_API", "WARN", f"[Auto-Refresh] Telegram alert error: {tg_err}")
+                        else:
+                            retry_count += 1
+                            err_msg = res.get("message", "Unknown error")
+                            log_message("OPEN_API", "ERROR", f"[Auto-Refresh] Attempt {retry_count}/{max_retries} failed for '{prof_name}': {err_msg}")
+                            
+                            if retry_count < max_retries:
+                                log_message("OPEN_API", "WARN", f"[Auto-Refresh] Waiting 1 hour before retry {retry_count + 1}...")
+                                await asyncio.sleep(3600)  # Wait 1 hour before retry
+                            else:
+                                # All 3 retries exhausted -> Critical Telegram Alert
+                                try:
+                                    await send_telegram_server_notification(
+                                        f"🚨 <b>CẢNH BÁO: TỰ ĐỘNG GIA HẠN TOKEN THẤT BẠI</b>\n"
+                                        f"👤 Hồ sơ: <b>{prof_name}</b> (<code>{p.get('ctid_email')}</code>)\n"
+                                        f"❌ Chi tiết lỗi: <code>{err_msg}</code>\n"
+                                        f"⚠️ Đã thử lại {max_retries} lần không thành công.\n"
+                                        f"💡 <b>Khuyến nghị</b>: Vui lòng kiểm tra kết nối mạng VPS hoặc truy cập Web Hub để cấp quyền/làm mới thủ công!"
+                                    )
+                                except Exception:
+                                    pass
+
+            # Sleep 12 hours before next evaluation loop
+            await asyncio.sleep(43200)
+
+        except Exception as ex:
+            log_message("OPEN_API", "ERROR", f"[Auto-Refresh] Unexpected error in auto-refresh loop: {ex}")
+            await asyncio.sleep(3600)
+
 def cleanup_stale_positions_on_startup():
     """
     Startup cleanup: deletes all open positions in the DB belonging to accounts
@@ -656,9 +734,10 @@ async def startup_event():
     asyncio.create_task(sync_active_accounts_telemetry(force=True))
     asyncio.create_task(sync_ctrader_cloud_trade_history(days=30, force=True))
 
-    # Start 24h database maintenance loop & 12h leaderboard scheduler loop
+    # Start 24h database maintenance loop, 12h leaderboard scheduler loop & auto token refresh loop
     asyncio.create_task(database_maintenance_loop())
     asyncio.create_task(leaderboard_scheduler_loop())
+    asyncio.create_task(auto_refresh_open_api_tokens_loop())
     
     # Send Telegram Startup Alert
     try:
@@ -1571,9 +1650,35 @@ async def test_profile_connection(profile_id: str, request: Request):
 async def refresh_profile_token(profile_id: str, request: Request):
     require_admin(request)
     from account_config import refresh_profile_open_api_token
-    result = refresh_profile_open_api_token(profile_id)
+    result = await asyncio.to_thread(refresh_profile_open_api_token, profile_id)
     if result.get("status") != "success":
-        raise HTTPException(status_code=400, detail=result.get("message", "Token refresh failed"))
+        err_msg = result.get("message", "Token refresh failed")
+        try:
+            await send_telegram_server_notification(
+                f"🚨 <b>LỖI LÀM MỚI TOKEN OPEN API</b>\n"
+                f"👤 Hồ sơ ID: <code>{profile_id}</code>\n"
+                f"❌ Lỗi: <code>{err_msg}</code>"
+            )
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail=err_msg)
+
+    # Success Telegram notification
+    try:
+        p_name = result.get("profile_name", profile_id)
+        p_email = result.get("ctid_email", "")
+        t_masked = result.get("access_token_masked", "••••••••")
+        await send_telegram_server_notification(
+            f"🔑 <b>LÀM MỚI THÀNH CÔNG TOKEN OPEN API</b>\n"
+            f"👤 Hồ sơ: <b>{p_name}</b> (<code>{p_email}</code>)\n"
+            f"🔒 Access Token mới: <code>{t_masked}</code>\n"
+            f"⏳ Thời hạn: <b>30 ngày</b>\n"
+            f"🔄 Lần tự động gia hạn kế tiếp: <b>Sau 15 ngày</b>\n"
+            f"🟢 Trạng thái: Đã cập nhật & Lưu trữ an toàn."
+        )
+    except Exception:
+        pass
+
     return result
 
 @app.post("/api/accounts/profiles/{profile_id}/scan-accounts")
