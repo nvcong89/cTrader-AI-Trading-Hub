@@ -106,6 +106,28 @@ export default function BotManagerTab({ data, refreshData, isGuest = false, onNa
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
 
+  // Fleet Sub-tab State (Synced with OverviewTab via ctrader_overview_fleet_tab)
+  const [activeFleetTab, setActiveFleetTab] = useState<'live' | 'demo'>(() => {
+    return (localStorage.getItem('ctrader_overview_fleet_tab') as 'live' | 'demo') || 'live';
+  });
+
+  const handleFleetTabChange = (tab: 'live' | 'demo') => {
+    setActiveFleetTab(tab);
+    localStorage.setItem('ctrader_overview_fleet_tab', tab);
+  };
+
+  // Sync subtab state across tabs / windows
+  useEffect(() => {
+    const handleStorageChange = () => {
+      const saved = localStorage.getItem('ctrader_overview_fleet_tab');
+      if (saved === 'live' || saved === 'demo') {
+        setActiveFleetTab(saved);
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, []);
+
   // Modals
   const [isDeployModalOpen, setIsDeployModalOpen] = useState(false);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
@@ -690,19 +712,8 @@ export default function BotManagerTab({ data, refreshData, isGuest = false, onNa
     }
   };
 
-  // Computed Metrics (Deduplicated by unique active account_id to prevent double counting)
+  // Computed Metrics
   const runningBots = botsList.filter((b) => b.status === 'RUNNING');
-  
-  const uniqueActiveAccountsMap = new Map<string, number>();
-  runningBots.forEach((b) => {
-    const accKey = (b.account_id && String(b.account_id).trim()) || `bot_${b.id}`;
-    const eq = Number(b.account_equity) || 0;
-    if (!uniqueActiveAccountsMap.has(accKey) || eq > 0) {
-      uniqueActiveAccountsMap.set(accKey, eq);
-    }
-  });
-  const totalRunningEquity = Array.from(uniqueActiveAccountsMap.values()).reduce((acc, val) => acc + val, 0);
-  const activeAccountsCount = uniqueActiveAccountsMap.size;
 
   // Segment into Live Bots and Demo Bots
   const liveBots = orderedBots.filter((b) => (b.account_type || '').toLowerCase() === 'live');
@@ -726,6 +737,13 @@ export default function BotManagerTab({ data, refreshData, isGuest = false, onNa
     if (!demoAccountsMap.has(accKey) || eq > 0) demoAccountsMap.set(accKey, eq);
   });
   const totalDemoEquity = Array.from(demoAccountsMap.values()).reduce((acc, val) => acc + val, 0);
+
+  // Active Fleet Scope (for Sub-tab segregation)
+  const isCurrentFleetLive = activeFleetTab === 'live';
+  const currentFleetBots = isCurrentFleetLive ? liveBots : demoBots;
+  const currentFleetRunningBots = isCurrentFleetLive ? runningLiveBots : runningDemoBots;
+  const currentFleetActiveAccountsCount = isCurrentFleetLive ? liveAccountsMap.size : demoAccountsMap.size;
+  const currentFleetActiveEquity = isCurrentFleetLive ? totalLiveEquity : totalDemoEquity;
 
   // Filtered available cBots for search
   const filteredCbots = cbots.filter(
@@ -1411,13 +1429,168 @@ export default function BotManagerTab({ data, refreshData, isGuest = false, onNa
         </div>
       </div>
 
+      {/* 🎛️ SUB-TAB FLEET SWITCHER (LIVE vs DEMO) */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+          gap: '1rem',
+          background: 'rgba(15, 23, 42, 0.6)',
+          padding: '0.5rem',
+          borderRadius: '14px',
+          border: '1px solid rgba(255, 255, 255, 0.08)'
+        }}
+      >
+        {/* Tab 1: Live Fleet */}
+        <div
+          id="btn-subtab-live-fleet"
+          onClick={() => handleFleetTabChange('live')}
+          style={{
+            cursor: 'pointer',
+            padding: '1.1rem 1.25rem',
+            borderRadius: '10px',
+            transition: 'all 0.2s ease',
+            position: 'relative',
+            overflow: 'hidden',
+            background: activeFleetTab === 'live'
+              ? 'linear-gradient(135deg, rgba(245, 158, 11, 0.16) 0%, rgba(15, 23, 42, 0.9) 100%)'
+              : 'rgba(15, 23, 42, 0.4)',
+            border: activeFleetTab === 'live'
+              ? '1.5px solid #fbbf24'
+              : '1px solid rgba(255, 255, 255, 0.05)',
+            boxShadow: activeFleetTab === 'live'
+              ? '0 6px 20px rgba(245, 158, 11, 0.15)'
+              : 'none'
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+              <div
+                style={{
+                  width: '36px',
+                  height: '36px',
+                  borderRadius: '8px',
+                  background: activeFleetTab === 'live' ? 'rgba(245, 158, 11, 0.25)' : 'rgba(255, 255, 255, 0.05)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}
+              >
+                <ShieldCheck size={22} color={activeFleetTab === 'live' ? '#fbbf24' : '#94a3b8'} />
+              </div>
+              <div>
+                <div style={{ fontSize: '1.05rem', fontWeight: 800, color: activeFleetTab === 'live' ? '#fbbf24' : '#cbd5e1', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  LIVE TRADING FLEET
+                </div>
+                <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: '1px' }}>
+                  Tài khoản Live vốn thật • Real Capital
+                </div>
+              </div>
+            </div>
+            <span
+              style={{
+                background: activeFleetTab === 'live' ? 'rgba(234, 179, 8, 0.2)' : 'rgba(255, 255, 255, 0.05)',
+                border: activeFleetTab === 'live' ? '1px solid rgba(234, 179, 8, 0.5)' : '1px solid rgba(255, 255, 255, 0.1)',
+                color: activeFleetTab === 'live' ? '#fbbf24' : '#64748b',
+                fontSize: '0.7rem',
+                fontWeight: 800,
+                padding: '0.2rem 0.6rem',
+                borderRadius: '999px',
+                letterSpacing: '0.04em'
+              }}
+            >
+              REAL CAPITAL
+            </span>
+          </div>
+          {/* Live Fleet Quick Stats Bar */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.75rem', fontSize: '0.76rem', color: '#cbd5e1', paddingTop: '0.65rem', borderTop: '1px solid rgba(255, 255, 255, 0.06)' }}>
+            <span>Bots: <strong style={{ color: '#f8fafc' }}>{liveBots.length}</strong></span>
+            <span style={{ color: '#475569' }}>•</span>
+            <span>Đang chạy: <strong style={{ color: runningLiveBots.length > 0 ? '#34d399' : '#94a3b8' }}>{runningLiveBots.length}</strong></span>
+            <span style={{ color: '#475569' }}>•</span>
+            <span>Live Equity: <strong style={{ color: '#fbbf24', fontFamily: 'monospace' }}>${totalLiveEquity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></span>
+          </div>
+        </div>
+
+        {/* Tab 2: Demo Fleet */}
+        <div
+          id="btn-subtab-demo-fleet"
+          onClick={() => handleFleetTabChange('demo')}
+          style={{
+            cursor: 'pointer',
+            padding: '1.1rem 1.25rem',
+            borderRadius: '10px',
+            transition: 'all 0.2s ease',
+            position: 'relative',
+            overflow: 'hidden',
+            background: activeFleetTab === 'demo'
+              ? 'linear-gradient(135deg, rgba(56, 189, 248, 0.16) 0%, rgba(15, 23, 42, 0.9) 100%)'
+              : 'rgba(15, 23, 42, 0.4)',
+            border: activeFleetTab === 'demo'
+              ? '1.5px solid #38bdf8'
+              : '1px solid rgba(255, 255, 255, 0.05)',
+            boxShadow: activeFleetTab === 'demo'
+              ? '0 6px 20px rgba(56, 189, 248, 0.15)'
+              : 'none'
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+              <div
+                style={{
+                  width: '36px',
+                  height: '36px',
+                  borderRadius: '8px',
+                  background: activeFleetTab === 'demo' ? 'rgba(56, 189, 248, 0.25)' : 'rgba(255, 255, 255, 0.05)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}
+              >
+                <Bot size={22} color={activeFleetTab === 'demo' ? '#38bdf8' : '#94a3b8'} />
+              </div>
+              <div>
+                <div style={{ fontSize: '1.05rem', fontWeight: 800, color: activeFleetTab === 'demo' ? '#38bdf8' : '#cbd5e1', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  DEMO TESTING FLEET
+                </div>
+                <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: '1px' }}>
+                  Tài khoản Demo thử nghiệm • Sandbox
+                </div>
+              </div>
+            </div>
+            <span
+              style={{
+                background: activeFleetTab === 'demo' ? 'rgba(56, 189, 248, 0.2)' : 'rgba(255, 255, 255, 0.05)',
+                border: activeFleetTab === 'demo' ? '1px solid rgba(56, 189, 248, 0.5)' : '1px solid rgba(255, 255, 255, 0.1)',
+                color: activeFleetTab === 'demo' ? '#38bdf8' : '#64748b',
+                fontSize: '0.7rem',
+                fontWeight: 800,
+                padding: '0.2rem 0.6rem',
+                borderRadius: '999px',
+                letterSpacing: '0.04em'
+              }}
+            >
+              SANDBOX / TESTING
+            </span>
+          </div>
+          {/* Demo Fleet Quick Stats Bar */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.75rem', fontSize: '0.76rem', color: '#cbd5e1', paddingTop: '0.65rem', borderTop: '1px solid rgba(255, 255, 255, 0.06)' }}>
+            <span>Bots: <strong style={{ color: '#f8fafc' }}>{demoBots.length}</strong></span>
+            <span style={{ color: '#475569' }}>•</span>
+            <span>Đang chạy: <strong style={{ color: runningDemoBots.length > 0 ? '#34d399' : '#94a3b8' }}>{runningDemoBots.length}</strong></span>
+            <span style={{ color: '#475569' }}>•</span>
+            <span>Demo Equity: <strong style={{ color: '#38bdf8', fontFamily: 'monospace' }}>${totalDemoEquity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></span>
+          </div>
+        </div>
+      </div>
+
       {/* Executive Metrics HUD */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem' }}>
-        {/* Card 1: Configured Bots */}
+        {/* Card 1: Configured Bots (Segregated by Active Fleet) */}
         <div
           style={{
             background: 'linear-gradient(145deg, rgba(30, 41, 59, 0.7) 0%, rgba(15, 23, 42, 0.8) 100%)',
-            border: '1px solid rgba(255, 255, 255, 0.08)',
+            border: isCurrentFleetLive ? '1px solid rgba(234, 179, 8, 0.25)' : '1px solid rgba(56, 189, 248, 0.25)',
             borderRadius: '12px',
             padding: '1.25rem',
             display: 'flex',
@@ -1431,22 +1604,22 @@ export default function BotManagerTab({ data, refreshData, isGuest = false, onNa
               width: '46px',
               height: '46px',
               borderRadius: '10px',
-              background: 'rgba(56, 189, 248, 0.12)',
-              border: '1px solid rgba(56, 189, 248, 0.3)',
+              background: isCurrentFleetLive ? 'rgba(234, 179, 8, 0.12)' : 'rgba(56, 189, 248, 0.12)',
+              border: `1px solid ${isCurrentFleetLive ? 'rgba(234, 179, 8, 0.35)' : 'rgba(56, 189, 248, 0.3)'}`,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              color: '#38bdf8'
+              color: isCurrentFleetLive ? '#fbbf24' : '#38bdf8'
             }}
           >
-            <Bot size={24} />
+            {isCurrentFleetLive ? <ShieldCheck size={24} /> : <Bot size={24} />}
           </div>
           <div>
             <div style={{ color: '#94a3b8', fontSize: '0.8rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              Configured Bots
+              {isCurrentFleetLive ? 'Configured Live Bots' : 'Configured Demo Bots'}
             </div>
             <div style={{ fontSize: '1.6rem', fontWeight: 800, color: '#f8fafc', marginTop: '0.2rem' }}>
-              {botsList.length} <span style={{ fontSize: '0.875rem', fontWeight: 500, color: '#64748b' }}>Instances</span>
+              {currentFleetBots.length} <span style={{ fontSize: '0.875rem', fontWeight: 500, color: '#64748b' }}>{isCurrentFleetLive ? 'Live Instances' : 'Demo Instances'}</span>
             </div>
           </div>
         </div>
@@ -1455,7 +1628,7 @@ export default function BotManagerTab({ data, refreshData, isGuest = false, onNa
         <div
           style={{
             background: 'linear-gradient(145deg, rgba(30, 41, 59, 0.7) 0%, rgba(15, 23, 42, 0.8) 100%)',
-            border: runningBots.length > 0 ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(255, 255, 255, 0.08)',
+            border: currentFleetRunningBots.length > 0 ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(255, 255, 255, 0.08)',
             borderRadius: '12px',
             padding: '1.25rem',
             display: 'flex',
@@ -1469,23 +1642,23 @@ export default function BotManagerTab({ data, refreshData, isGuest = false, onNa
               width: '46px',
               height: '46px',
               borderRadius: '10px',
-              background: runningBots.length > 0 ? 'rgba(16, 185, 129, 0.15)' : 'rgba(100, 116, 139, 0.12)',
-              border: `1px solid ${runningBots.length > 0 ? '#10b981' : '#64748b'}`,
+              background: currentFleetRunningBots.length > 0 ? 'rgba(16, 185, 129, 0.15)' : 'rgba(100, 116, 139, 0.12)',
+              border: `1px solid ${currentFleetRunningBots.length > 0 ? '#10b981' : '#64748b'}`,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              color: runningBots.length > 0 ? '#10b981' : '#94a3b8'
+              color: currentFleetRunningBots.length > 0 ? '#10b981' : '#94a3b8'
             }}
           >
             <Zap size={24} />
           </div>
           <div>
             <div style={{ color: '#94a3b8', fontSize: '0.8rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              Running Processes
+              {isCurrentFleetLive ? 'Running Live Processes' : 'Running Demo Processes'}
             </div>
-            <div style={{ fontSize: '1.6rem', fontWeight: 800, color: runningBots.length > 0 ? '#34d399' : '#94a3b8', marginTop: '0.2rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              {runningBots.length}
-              {runningBots.length > 0 && (
+            <div style={{ fontSize: '1.6rem', fontWeight: 800, color: currentFleetRunningBots.length > 0 ? '#34d399' : '#94a3b8', marginTop: '0.2rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              {currentFleetRunningBots.length}
+              {currentFleetRunningBots.length > 0 && (
                 <span style={{ fontSize: '0.75rem', padding: '0.15rem 0.5rem', borderRadius: '4px', background: 'rgba(16, 185, 129, 0.2)', color: '#34d399' }}>
                   ONLINE
                 </span>
@@ -1498,7 +1671,7 @@ export default function BotManagerTab({ data, refreshData, isGuest = false, onNa
         <div
           style={{
             background: 'linear-gradient(145deg, rgba(30, 41, 59, 0.7) 0%, rgba(15, 23, 42, 0.8) 100%)',
-            border: '1px solid rgba(255, 255, 255, 0.08)',
+            border: isCurrentFleetLive ? '1px solid rgba(234, 179, 8, 0.25)' : '1px solid rgba(56, 189, 248, 0.25)',
             borderRadius: '12px',
             padding: '1.25rem',
             display: 'flex',
@@ -1512,26 +1685,26 @@ export default function BotManagerTab({ data, refreshData, isGuest = false, onNa
               width: '46px',
               height: '46px',
               borderRadius: '10px',
-              background: 'rgba(168, 85, 247, 0.12)',
-              border: '1px solid rgba(168, 85, 247, 0.3)',
+              background: isCurrentFleetLive ? 'rgba(234, 179, 8, 0.12)' : 'rgba(56, 189, 248, 0.12)',
+              border: `1px solid ${isCurrentFleetLive ? 'rgba(234, 179, 8, 0.35)' : 'rgba(56, 189, 248, 0.3)'}`,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              color: '#c084fc'
+              color: isCurrentFleetLive ? '#fbbf24' : '#38bdf8'
             }}
           >
             <Wallet size={24} />
           </div>
           <div>
             <div style={{ color: '#94a3b8', fontSize: '0.8rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              Active Fleet Equity
+              {isCurrentFleetLive ? 'Active Live Equity' : 'Active Demo Equity'}
             </div>
-            <div style={{ fontSize: '1.6rem', fontWeight: 800, color: '#f8fafc', marginTop: '0.2rem' }}>
-              ${totalRunningEquity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            <div style={{ fontSize: '1.6rem', fontWeight: 800, color: isCurrentFleetLive ? '#fbbf24' : '#38bdf8', marginTop: '0.2rem', fontFamily: 'var(--font-mono)' }}>
+              ${currentFleetActiveEquity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
-            {runningBots.length > 0 && (
-              <div style={{ fontSize: '0.75rem', color: '#c084fc', marginTop: '0.15rem', fontWeight: 500 }}>
-                {runningBots.length} active bot{runningBots.length !== 1 ? 's' : ''} on {activeAccountsCount} unique account{activeAccountsCount !== 1 ? 's' : ''}
+            {currentFleetRunningBots.length > 0 && (
+              <div style={{ fontSize: '0.75rem', color: isCurrentFleetLive ? '#fbbf24' : '#38bdf8', marginTop: '0.15rem', fontWeight: 500 }}>
+                {currentFleetRunningBots.length} active bot{currentFleetRunningBots.length !== 1 ? 's' : ''} on {currentFleetActiveAccountsCount} unique account{currentFleetActiveAccountsCount !== 1 ? 's' : ''}
               </div>
             )}
           </div>
@@ -1577,6 +1750,7 @@ export default function BotManagerTab({ data, refreshData, isGuest = false, onNa
       </div>
 
       {/* SECTION 1A: LIVE TRADING FLEET (Tài Khoản Live) */}
+      {activeFleetTab === 'live' && (
       <div
         style={{
           background: 'linear-gradient(145deg, rgba(234, 179, 8, 0.05) 0%, rgba(15, 23, 42, 0.85) 100%)',
@@ -1778,8 +1952,10 @@ export default function BotManagerTab({ data, refreshData, isGuest = false, onNa
 
         {renderBotTable(liveBots, 'live')}
       </div>
+      )}
 
       {/* SECTION 1B: DEMO & PAPER FLEET (Tài Khoản Demo) */}
+      {activeFleetTab === 'demo' && (
       <div
         style={{
           background: 'linear-gradient(145deg, rgba(56, 189, 248, 0.04) 0%, rgba(15, 23, 42, 0.85) 100%)',
@@ -1981,6 +2157,7 @@ export default function BotManagerTab({ data, refreshData, isGuest = false, onNa
 
         {renderBotTable(demoBots, 'demo')}
       </div>
+      )}
 
       {/* SECTION 2: Available cBots Library & Selector */}
       <div
