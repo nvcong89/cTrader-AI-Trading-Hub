@@ -304,7 +304,8 @@ export default function SystemLogsTab({ isGuest = false }: SystemLogsTabProps) {
             <div>
               <div style={{ fontSize: '0.78rem', color: '#94a3b8', fontWeight: 600 }}>Dung Lượng portfolio.db:</div>
               <div style={{ fontSize: '0.95rem', fontWeight: 800, color: dbStats?.is_storage_warning ? '#f87171' : '#f8fafc' }}>
-                {dbStats?.total_size_mb || 0} MB <span style={{ fontSize: '0.75rem', color: '#64748b', fontWeight: 500 }}>/ 100 MB max</span>
+                {dbStats?.total_size_mb ? (dbStats.total_size_mb >= 1024 ? `${(dbStats.total_size_mb / 1024).toFixed(2)} GB` : `${dbStats.total_size_mb} MB`) : '0 MB'}{' '}
+                <span style={{ fontSize: '0.75rem', color: '#64748b', fontWeight: 500 }}>/ 5 GB max</span>
               </div>
             </div>
           </div>

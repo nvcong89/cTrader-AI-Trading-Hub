@@ -659,7 +659,7 @@ def backup_database(max_backups: int = 7):
 
 def get_database_stats():
     """
-    Returns statistics about database tables, row counts, file sizes, and 100MB threshold warnings.
+    Returns statistics about database tables, row counts, file sizes, and 5GB threshold warnings.
     """
     conn = None
     try:
@@ -689,8 +689,9 @@ def get_database_stats():
         wal_size_mb = round(wal_size_kb / 1024.0, 2)
         total_size_mb = round((db_size_kb + wal_size_kb) / 1024.0, 2)
 
-        warning_threshold_mb = 100.0
-        caution_threshold_mb = 75.0
+        # 5GB safety limits (5120 MB)
+        warning_threshold_mb = 5120.0
+        caution_threshold_mb = 3840.0
 
         is_storage_warning = total_size_mb >= warning_threshold_mb
         is_storage_caution = total_size_mb >= caution_threshold_mb

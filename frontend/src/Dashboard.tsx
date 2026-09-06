@@ -605,7 +605,7 @@ export default function Dashboard() {
       <main style={{ flex: 1, padding: isMobile ? '0.85rem' : '2rem', overflowY: 'auto' }}>
         {error && <div style={{ color: '#ef4444', marginBottom: '1rem' }}>{error}</div>}
 
-        {/* 100MB Database Storage Warning Banner */}
+        {/* 5GB Database Storage Warning Banner */}
         {dbStats?.is_storage_warning && !dismissDbWarning && (
           <div
             style={{
@@ -629,7 +629,7 @@ export default function Dashboard() {
                   CẢNH BÁO DUNG LƯỢNG DATABASE:
                 </strong>
                 <span style={{ color: '#f8fafc', fontSize: '0.85rem', marginLeft: '6px' }}>
-                  Tệp <code>portfolio.db</code> đã đạt <strong>{dbStats.total_size_mb} MB</strong> (vượt ngưỡng an toàn 100 MB). Hãy xuất CSV để lưu trữ riêng và thực hiện Reset Database.
+                  Tệp <code>portfolio.db</code> đã đạt <strong>{dbStats.total_size_mb >= 1024 ? `${(dbStats.total_size_mb / 1024).toFixed(2)} GB` : `${dbStats.total_size_mb} MB`}</strong> (vượt ngưỡng an toàn 5 GB). Hãy xuất CSV để lưu trữ riêng và thực hiện Reset Database.
                 </span>
               </div>
             </div>

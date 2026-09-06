@@ -574,7 +574,7 @@ ai_consecutive_errors = 0
 MAX_CONSECUTIVE_AI_ERRORS = 5
 
 async def database_maintenance_loop():
-    """Runs SQLite database log purging, WAL checkpointing, safe online backup, and 100MB threshold check every 24 hours."""
+    """Runs SQLite database log purging, WAL checkpointing, safe online backup, and 5GB threshold check every 24 hours."""
     while True:
         try:
             await asyncio.sleep(86400) # 24 hours
@@ -583,15 +583,16 @@ async def database_maintenance_loop():
             backup_res = backup_database(max_backups=7)
             log_message("SYSTEM", "INFO", f"Maintenance completed: {maintain_res.get('purged_logs', 0)} logs purged. Backup: {backup_res.get('backup_file')}")
             
-            # Check 100MB threshold and alert
+            # Check 5GB threshold and alert
             stats = get_database_stats()
             if stats.get("is_storage_warning"):
                 total_mb = stats.get("total_size_mb", 0.0)
-                log_message("SYSTEM", "WARNING", f"⚠️ Database size ({total_mb} MB) exceeded 100MB safety threshold!")
+                size_str = f"{total_mb / 1024:.2f} GB" if total_mb >= 1024 else f"{total_mb} MB"
+                log_message("SYSTEM", "WARNING", f"⚠️ Database size ({size_str}) exceeded 5GB safety threshold!")
                 try:
                     await send_telegram_server_notification(
                         f"⚠️ <b>CẢNH BÁO DUNG LƯỢNG DATABASE</b>\n"
-                        f"Dung lượng tệp <code>portfolio.db</code> đã đạt <b>{total_mb} MB</b> (vượt ngưỡng an toàn 100 MB).\n\n"
+                        f"Dung lượng tệp <code>portfolio.db</code> đã đạt <b>{size_str}</b> (vượt ngưỡng an toàn 5 GB).\n\n"
                         f"💡 <b>Khuyến nghị</b>: Truy cập Web Hub để <b>Export CSV</b> lưu trữ dữ liệu riêng và thực hiện <b>Reset & Vacuum Database</b>."
                     )
                 except Exception:
