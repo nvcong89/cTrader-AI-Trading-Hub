@@ -500,6 +500,33 @@ def init_db():
         except Exception:
             pass
 
+    # News Auto Broadcast Config & History Tables
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS news_auto_broadcast_config (
+            id INTEGER PRIMARY KEY,
+            is_enabled INTEGER DEFAULT 0,
+            advance_minutes INTEGER DEFAULT 30,
+            symbols_json TEXT DEFAULT '["XAUUSD"]',
+            updated_at TEXT
+        )
+    ''')
+
+    c.execute("SELECT id FROM news_auto_broadcast_config WHERE id = 1")
+    if not c.fetchone():
+        c.execute('''
+            INSERT INTO news_auto_broadcast_config (id, is_enabled, advance_minutes, symbols_json, updated_at)
+            VALUES (1, 0, 30, '["XAUUSD"]', ?)
+        ''', (datetime.datetime.now().isoformat(),))
+
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS news_auto_broadcast_history (
+            cluster_hash TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            broadcasted_at TEXT NOT NULL,
+            PRIMARY KEY (cluster_hash, symbol)
+        )
+    ''')
+
     # Performance B-Tree Indexes
     indexes = [
         "CREATE INDEX IF NOT EXISTS idx_positions_account_bot ON positions (account_id, bot_id)",
@@ -1108,6 +1135,82 @@ def get_recent_news_assessments(limit: int = 50) -> List[dict]:
             pass
         results.append(item)
     return results
+
+# ==========================================
+# NEWS AUTO BROADCAST CONFIG & DEDUPLICATION
+# ==========================================
+
+def get_news_auto_config() -> dict:
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT * FROM news_auto_broadcast_config WHERE id = 1')
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return {
+            "id": 1,
+            "is_enabled": False,
+            "advance_minutes": 30,
+            "symbols": ["XAUUSD"],
+            "updated_at": datetime.datetime.now().isoformat()
+        }
+    data = dict(row)
+    try:
+        data["symbols"] = json.loads(data.get("symbols_json") or '["XAUUSD"]')
+    except Exception:
+        data["symbols"] = ["XAUUSD"]
+    data["is_enabled"] = bool(data.get("is_enabled", 0))
+    data["advance_minutes"] = int(data.get("advance_minutes", 30))
+    return data
+
+def save_news_auto_config(is_enabled: bool, advance_minutes: int, symbols: list) -> dict:
+    conn = get_db()
+    c = conn.cursor()
+    symbols_clean = [str(s).strip().upper() for s in symbols if str(s).strip()]
+    if not symbols_clean:
+        symbols_clean = ["XAUUSD"]
+    symbols_json = json.dumps(symbols_clean, ensure_ascii=False)
+    now_str = datetime.datetime.now().isoformat()
+    advance_mins = max(5, min(240, int(advance_minutes)))
+
+    c.execute('''
+        INSERT INTO news_auto_broadcast_config (id, is_enabled, advance_minutes, symbols_json, updated_at)
+        VALUES (1, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            is_enabled = excluded.is_enabled,
+            advance_minutes = excluded.advance_minutes,
+            symbols_json = excluded.symbols_json,
+            updated_at = excluded.updated_at
+    ''', (1 if is_enabled else 0, advance_mins, symbols_json, now_str))
+    conn.commit()
+    conn.close()
+    return {
+        "id": 1,
+        "is_enabled": bool(is_enabled),
+        "advance_minutes": advance_mins,
+        "symbols": symbols_clean,
+        "updated_at": now_str
+    }
+
+def is_news_auto_broadcasted(cluster_hash: str, symbol: str) -> bool:
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT 1 FROM news_auto_broadcast_history WHERE cluster_hash = ? AND symbol = ?', (cluster_hash, symbol.strip().upper()))
+    res = c.fetchone()
+    conn.close()
+    return res is not None
+
+def mark_news_auto_broadcasted(cluster_hash: str, symbol: str):
+    conn = get_db()
+    c = conn.cursor()
+    now_str = datetime.datetime.now().isoformat()
+    c.execute('''
+        INSERT OR IGNORE INTO news_auto_broadcast_history (cluster_hash, symbol, broadcasted_at)
+        VALUES (?, ?, ?)
+    ''', (cluster_hash, symbol.strip().upper(), now_str))
+    conn.commit()
+    conn.close()
+
 
 
 

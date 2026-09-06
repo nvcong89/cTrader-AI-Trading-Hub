@@ -424,3 +424,54 @@ def parse_news_ai_response(raw_text: str) -> Dict[str, Any]:
         "analysis_markdown_vi": analysis_markdown_vi,
         "analysis_markdown_en": analysis_markdown_en
     }
+
+def is_symbol_related_to_currencies(symbol: str, currencies: List[str]) -> bool:
+    """
+    Determines if a target trading instrument is fundamentally impacted by the given currencies.
+    - Standard FX (6 chars, e.g. EURUSD, GBPJPY): extracts base and quote currencies.
+    - Gold / Metals (XAUUSD, XAGUSD): linked to USD, EUR, etc.
+    - Indices / Equities (US30, NAS100, SPX500, GER40, UK100): linked to national currency.
+    - Crypto (BTCUSD, ETHUSD): linked to USD.
+    - Substring matching for cross-flexibility.
+    """
+    sym = str(symbol or "").strip().upper()
+    currs = [str(c).strip().upper() for c in currencies if str(c).strip()]
+    if not sym or not currs:
+        return False
+
+    # Standard known symbol mappings
+    known_symbol_currencies = {
+        "XAUUSD": {"USD"},
+        "XAGUSD": {"USD"},
+        "BTCUSD": {"USD"},
+        "ETHUSD": {"USD"},
+        "US30": {"USD"},
+        "NAS100": {"USD"},
+        "SPX500": {"USD"},
+        "US500": {"USD"},
+        "GER40": {"EUR"},
+        "GER30": {"EUR"},
+        "UK100": {"GBP"},
+        "JP225": {"JPY"},
+        "AUS200": {"AUD"}
+    }
+
+    sym_currencies = set()
+    if sym in known_symbol_currencies:
+        sym_currencies.update(known_symbol_currencies[sym])
+    elif len(sym) == 6:
+        # Standard 6-char fx: base = first 3, quote = last 3
+        sym_currencies.add(sym[:3])
+        sym_currencies.add(sym[3:])
+    else:
+        for c_code in ["USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD", "CNY"]:
+            if c_code in sym:
+                sym_currencies.add(c_code)
+
+    # Check intersection
+    for c in currs:
+        if c in sym_currencies or c in sym:
+            return True
+
+    return False
+

@@ -19,7 +19,11 @@ import {
   Calendar,
   Sparkles,
   SlidersHorizontal,
-  Globe
+  Globe,
+  Settings,
+  Bell,
+  Plus,
+  Check
 } from 'lucide-react';
 
 interface NewsEventItem {
@@ -113,17 +117,77 @@ export default function NewsAssessmentTab({ isGuest = false }: NewsAssessmentTab
   // Telegram Send State
   const [isSendingTelegram, setIsSendingTelegram] = useState<boolean>(false);
 
+  // Auto Assessment & Telegram Broadcast Setup State
+  const [isAutoModalOpen, setIsAutoModalOpen] = useState<boolean>(false);
+  const [isAutoEnabled, setIsAutoEnabled] = useState<boolean>(false);
+  const [advanceMinutes, setAdvanceMinutes] = useState<number>(30);
+  const [autoSymbols, setAutoSymbols] = useState<string[]>(['XAUUSD']);
+  const [customAutoSymbol, setCustomAutoSymbol] = useState<string>('');
+  const [isSavingAutoConfig, setIsSavingAutoConfig] = useState<boolean>(false);
+  const [isTestingAutoTelegram, setIsTestingAutoTelegram] = useState<boolean>(false);
+
   // Countdown timer clock (refreshes every second)
   const [nowTime, setNowTime] = useState<number>(Date.now());
 
   useEffect(() => {
     const timer = setInterval(() => setNowTime(Date.now()), 1000);
+    fetchAutoConfig();
     return () => clearInterval(timer);
   }, []);
 
   const showBanner = (type: 'success' | 'error', text: string) => {
     setStatusMessage({ type, text });
     setTimeout(() => setStatusMessage(null), 5000);
+  };
+
+  // Fetch Auto Broadcast Config
+  const fetchAutoConfig = async () => {
+    try {
+      const res = await axios.get(`${getApiBaseUrl()}/api/news/auto-config`, { withCredentials: true });
+      if (res.data) {
+        setIsAutoEnabled(Boolean(res.data.is_enabled));
+        setAdvanceMinutes(Number(res.data.advance_minutes) || 30);
+        setAutoSymbols(Array.isArray(res.data.symbols) && res.data.symbols.length > 0 ? res.data.symbols : ['XAUUSD']);
+      }
+    } catch (err) {
+      console.error('Failed to load auto news config', err);
+    }
+  };
+
+  // Save Auto Broadcast Config
+  const handleSaveAutoConfig = async () => {
+    setIsSavingAutoConfig(true);
+    try {
+      const payload = {
+        is_enabled: isAutoEnabled,
+        advance_minutes: advanceMinutes,
+        symbols: autoSymbols
+      };
+      const res = await axios.post(`${getApiBaseUrl()}/api/news/auto-config`, payload, { withCredentials: true });
+      if (res.data && res.data.status === 'success') {
+        showBanner('success', `Đã lưu cấu hình tự động: ${isAutoEnabled ? 'BẬT' : 'TẮT'} (Báo trước ${advanceMinutes} phút, ${autoSymbols.length} symbol)!`);
+        setIsAutoModalOpen(false);
+      }
+    } catch (err: any) {
+      showBanner('error', err.response?.data?.detail || 'Lỗi khi lưu cấu hình tự động.');
+    } finally {
+      setIsSavingAutoConfig(false);
+    }
+  };
+
+  // Test Telegram Notification
+  const handleTestAutoTelegram = async () => {
+    setIsTestingAutoTelegram(true);
+    try {
+      const res = await axios.post(`${getApiBaseUrl()}/api/news/test-telegram`, {}, { withCredentials: true });
+      if (res.data && res.data.status === 'success') {
+        showBanner('success', 'Đã bắn tin nhắn thử nghiệm thành công về nhóm Telegram!');
+      }
+    } catch (err: any) {
+      showBanner('error', err.response?.data?.detail || 'Không thể gửi tin nhắn thử nghiệm qua Telegram.');
+    } finally {
+      setIsTestingAutoTelegram(false);
+    }
   };
 
   // Fetch News Calendar
@@ -347,6 +411,41 @@ export default function NewsAssessmentTab({ isGuest = false }: NewsAssessmentTab
               {statusMessage.text}
             </div>
           )}
+
+          <button
+            id="btn-auto-setup"
+            onClick={() => setIsAutoModalOpen(true)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              padding: '0.55rem 0.95rem',
+              background: isAutoEnabled ? 'rgba(16, 185, 129, 0.15)' : 'rgba(30, 41, 59, 0.8)',
+              border: isAutoEnabled ? '1px solid #10b981' : '1px solid rgba(255, 255, 255, 0.12)',
+              borderRadius: '8px',
+              color: isAutoEnabled ? '#34d399' : '#cbd5e1',
+              cursor: 'pointer',
+              fontSize: '0.825rem',
+              fontWeight: 700,
+              boxShadow: isAutoEnabled ? '0 0 12px rgba(16, 185, 129, 0.25)' : 'none',
+              transition: 'all 0.2s ease'
+            }}
+          >
+            <Settings size={16} color={isAutoEnabled ? '#34d399' : '#94a3b8'} />
+            <span>Cài Đặt Tự Động</span>
+            <span
+              style={{
+                fontSize: '0.68rem',
+                padding: '0.15rem 0.45rem',
+                borderRadius: '999px',
+                background: isAutoEnabled ? '#10b981' : '#475569',
+                color: '#ffffff',
+                fontWeight: 800
+              }}
+            >
+              {isAutoEnabled ? `BẬT (${advanceMinutes}p)` : 'TẮT'}
+            </span>
+          </button>
 
           <button
             id="btn-news-history"
@@ -1337,6 +1436,373 @@ export default function NewsAssessmentTab({ isGuest = false }: NewsAssessmentTab
                   ))}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 7. AUTO ASSESSMENT & TELEGRAM BROADCAST SETUP MODAL */}
+      {isAutoModalOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.85)',
+            backdropFilter: 'blur(8px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 110,
+            padding: '1.5rem'
+          }}
+        >
+          <div
+            style={{
+              background: '#0f172a',
+              border: '1px solid rgba(255, 255, 255, 0.15)',
+              borderRadius: '16px',
+              width: '100%',
+              maxWidth: '620px',
+              maxHeight: '90vh',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+              boxShadow: '0 20px 50px rgba(0,0,0,0.5)'
+            }}
+          >
+            {/* Modal Header */}
+            <div style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid rgba(255, 255, 255, 0.1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <Settings size={20} color="#38bdf8" />
+                <h3 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 800, color: '#f8fafc' }}>
+                  Cài Đặt Tự Động Phân Tích &amp; Bắn Telegram
+                </h3>
+              </div>
+              <button
+                onClick={() => setIsAutoModalOpen(false)}
+                style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer' }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div style={{ padding: '1.5rem', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              {/* Section 1: Toggle Switch */}
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  background: isAutoEnabled ? 'rgba(16, 185, 129, 0.1)' : 'rgba(30, 41, 59, 0.6)',
+                  border: isAutoEnabled ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(255, 255, 255, 0.08)',
+                  borderRadius: '12px',
+                  padding: '1.1rem 1.25rem',
+                  transition: 'all 0.2s ease'
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: '0.95rem', fontWeight: 800, color: isAutoEnabled ? '#34d399' : '#f8fafc', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <Bell size={18} color={isAutoEnabled ? '#34d399' : '#94a3b8'} />
+                    <span>Tự Động Đánh Giá Tin Đỏ &amp; Báo Telegram</span>
+                  </div>
+                  <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginTop: '0.3rem', lineHeight: 1.4 }}>
+                    Khi bật, hệ thống chạy ngầm liên tục và tự động gọi AI phân tích song ngữ rồi bắn thông báo về Telegram khi tin đỏ sắp ra.
+                  </div>
+                </div>
+
+                {/* Switch button */}
+                <button
+                  id="toggle-auto-broadcast"
+                  onClick={() => setIsAutoEnabled(!isAutoEnabled)}
+                  style={{
+                    position: 'relative',
+                    width: '52px',
+                    height: '28px',
+                    borderRadius: '14px',
+                    background: isAutoEnabled ? '#10b981' : '#334155',
+                    border: 'none',
+                    cursor: 'pointer',
+                    transition: 'background 0.2s ease',
+                    flexShrink: 0
+                  }}
+                >
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: '3px',
+                      left: isAutoEnabled ? '27px' : '3px',
+                      width: '22px',
+                      height: '22px',
+                      borderRadius: '50%',
+                      background: '#ffffff',
+                      boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
+                      transition: 'left 0.2s ease'
+                    }}
+                  />
+                </button>
+              </div>
+
+              {/* Section 2: Advance Trigger Time */}
+              <div style={{ background: 'rgba(30, 41, 59, 0.5)', border: '1px solid rgba(255, 255, 255, 0.08)', borderRadius: '12px', padding: '1.1rem 1.25rem' }}>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 800, color: '#f8fafc', marginBottom: '0.25rem' }}>
+                  ⏰ Thời Gian Báo Trước Khi Tin Ra (Phút)
+                </label>
+                <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginBottom: '0.75rem' }}>
+                  Hệ thống sẽ kích hoạt phân tích và gửi báo cáo về Telegram trước giờ công bố đúng số phút này.
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+                  {[15, 30, 45, 60].map((mins) => (
+                    <button
+                      key={mins}
+                      onClick={() => setAdvanceMinutes(mins)}
+                      style={{
+                        padding: '0.4rem 0.85rem',
+                        borderRadius: '8px',
+                        fontSize: '0.8rem',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        background: advanceMinutes === mins ? 'rgba(56, 189, 248, 0.25)' : 'rgba(15, 23, 42, 0.6)',
+                        color: advanceMinutes === mins ? '#38bdf8' : '#cbd5e1',
+                        border: advanceMinutes === mins ? '1px solid #38bdf8' : '1px solid rgba(255, 255, 255, 0.1)',
+                        transition: 'all 0.15s ease'
+                      }}
+                    >
+                      {mins} phút
+                    </button>
+                  ))}
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginLeft: 'auto' }}>
+                    <input
+                      type="number"
+                      min={5}
+                      max={240}
+                      value={advanceMinutes}
+                      onChange={(e) => setAdvanceMinutes(Math.max(5, Math.min(240, Number(e.target.value) || 30)))}
+                      style={{
+                        width: '75px',
+                        padding: '0.35rem 0.5rem',
+                        background: 'rgba(15, 23, 42, 0.8)',
+                        border: '1px solid rgba(255, 255, 255, 0.2)',
+                        borderRadius: '6px',
+                        color: '#f8fafc',
+                        fontSize: '0.85rem',
+                        fontWeight: 700,
+                        textAlign: 'center',
+                        outline: 'none'
+                      }}
+                    />
+                    <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>phút</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Section 3: Target Symbols Selection */}
+              <div style={{ background: 'rgba(30, 41, 59, 0.5)', border: '1px solid rgba(255, 255, 255, 0.08)', borderRadius: '12px', padding: '1.1rem 1.25rem' }}>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 800, color: '#f8fafc', marginBottom: '0.25rem' }}>
+                  🎯 Danh Sách Symbol Cần Phân Tích &amp; Bắn Telegram
+                </label>
+                <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginBottom: '0.75rem' }}>
+                  Chỉ các tin đỏ có liên quan trực tiếp đến các symbol này mới được kích hoạt phân tích.
+                </div>
+
+                {/* Quick Add Buttons */}
+                <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', marginBottom: '0.85rem' }}>
+                  {COMMON_SYMBOLS.map((s) => {
+                    const isSelected = autoSymbols.includes(s);
+                    return (
+                      <button
+                        key={s}
+                        onClick={() => {
+                          if (isSelected) {
+                            if (autoSymbols.length > 1) {
+                              setAutoSymbols(autoSymbols.filter(x => x !== s));
+                            }
+                          } else {
+                            setAutoSymbols([...autoSymbols, s]);
+                          }
+                        }}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.35rem',
+                          padding: '0.35rem 0.65rem',
+                          borderRadius: '6px',
+                          fontSize: '0.78rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          background: isSelected ? 'rgba(56, 189, 248, 0.2)' : 'rgba(15, 23, 42, 0.6)',
+                          color: isSelected ? '#38bdf8' : '#94a3b8',
+                          border: isSelected ? '1px solid #38bdf8' : '1px solid rgba(255, 255, 255, 0.1)',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        {isSelected ? <Check size={13} /> : <Plus size={13} />}
+                        <span>{s}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Custom Symbol Input */}
+                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.85rem' }}>
+                  <input
+                    type="text"
+                    placeholder="Nhập symbol khác (VD: AUDUSD, USDCHF...)"
+                    value={customAutoSymbol}
+                    onChange={(e) => setCustomAutoSymbol(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && customAutoSymbol.trim()) {
+                        const sym = customAutoSymbol.trim().toUpperCase();
+                        if (!autoSymbols.includes(sym)) {
+                          setAutoSymbols([...autoSymbols, sym]);
+                        }
+                        setCustomAutoSymbol('');
+                      }
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: '0.45rem 0.75rem',
+                      background: 'rgba(15, 23, 42, 0.8)',
+                      border: '1px solid rgba(255, 255, 255, 0.15)',
+                      borderRadius: '6px',
+                      color: 'white',
+                      fontSize: '0.8rem',
+                      outline: 'none'
+                    }}
+                  />
+                  <button
+                    onClick={() => {
+                      if (customAutoSymbol.trim()) {
+                        const sym = customAutoSymbol.trim().toUpperCase();
+                        if (!autoSymbols.includes(sym)) {
+                          setAutoSymbols([...autoSymbols, sym]);
+                        }
+                        setCustomAutoSymbol('');
+                      }
+                    }}
+                    style={{
+                      padding: '0.45rem 0.85rem',
+                      background: 'rgba(56, 189, 248, 0.2)',
+                      border: '1px solid #38bdf8',
+                      borderRadius: '6px',
+                      color: '#38bdf8',
+                      fontSize: '0.8rem',
+                      fontWeight: 700,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    + Thêm
+                  </button>
+                </div>
+
+                {/* Active Selected Symbol Chips */}
+                <div style={{ display: 'flex', gap: '0.45rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                  <span style={{ fontSize: '0.75rem', color: '#94a3b8', marginRight: '0.25rem' }}>Đã chọn ({autoSymbols.length}):</span>
+                  {autoSymbols.map((sym) => (
+                    <span
+                      key={sym}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '0.35rem',
+                        padding: '0.25rem 0.55rem',
+                        background: 'rgba(56, 189, 248, 0.15)',
+                        border: '1px solid rgba(56, 189, 248, 0.4)',
+                        borderRadius: '6px',
+                        color: '#38bdf8',
+                        fontSize: '0.78rem',
+                        fontWeight: 800
+                      }}
+                    >
+                      <span>#{sym}</span>
+                      {autoSymbols.length > 1 && (
+                        <X
+                          size={13}
+                          style={{ cursor: 'pointer', opacity: 0.8 }}
+                          onClick={() => setAutoSymbols(autoSymbols.filter(x => x !== sym))}
+                        />
+                      )}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div
+              style={{
+                padding: '1rem 1.5rem',
+                borderTop: '1px solid rgba(255, 255, 255, 0.1)',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                background: 'rgba(30, 41, 59, 0.5)'
+              }}
+            >
+              <button
+                id="btn-test-auto-telegram"
+                onClick={handleTestAutoTelegram}
+                disabled={isTestingAutoTelegram || isGuest}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.45rem',
+                  padding: '0.55rem 1rem',
+                  background: 'rgba(56, 189, 248, 0.15)',
+                  border: '1px solid rgba(56, 189, 248, 0.35)',
+                  borderRadius: '8px',
+                  color: '#38bdf8',
+                  fontSize: '0.825rem',
+                  fontWeight: 700,
+                  cursor: isTestingAutoTelegram || isGuest ? 'not-allowed' : 'pointer'
+                }}
+              >
+                <Send size={15} />
+                <span>{isTestingAutoTelegram ? 'Đang gửi...' : 'Bắn Tin Thử Nghiệm'}</span>
+              </button>
+
+              <div style={{ display: 'flex', gap: '0.75rem' }}>
+                <button
+                  onClick={() => setIsAutoModalOpen(false)}
+                  style={{
+                    padding: '0.55rem 1rem',
+                    background: 'rgba(100, 116, 139, 0.2)',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                    borderRadius: '8px',
+                    color: '#94a3b8',
+                    fontSize: '0.825rem',
+                    fontWeight: 600,
+                    cursor: 'pointer'
+                  }}
+                >
+                  Đóng
+                </button>
+
+                <button
+                  id="btn-save-auto-config"
+                  onClick={handleSaveAutoConfig}
+                  disabled={isSavingAutoConfig || isGuest}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.45rem',
+                    padding: '0.55rem 1.25rem',
+                    background: isSavingAutoConfig || isGuest ? 'rgba(100, 116, 139, 0.3)' : 'linear-gradient(135deg, #0284c7 0%, #06b6d4 100%)',
+                    border: 'none',
+                    borderRadius: '8px',
+                    color: '#ffffff',
+                    fontSize: '0.825rem',
+                    fontWeight: 800,
+                    cursor: isSavingAutoConfig || isGuest ? 'not-allowed' : 'pointer',
+                    boxShadow: isSavingAutoConfig || isGuest ? 'none' : '0 4px 14px rgba(6, 182, 212, 0.3)'
+                  }}
+                >
+                  {isSavingAutoConfig ? <RefreshCw size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+                  <span>{isSavingAutoConfig ? 'Đang lưu...' : 'Lưu Cài Đặt'}</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

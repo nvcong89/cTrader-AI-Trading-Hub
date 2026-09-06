@@ -185,6 +185,57 @@ US labor market dynamics will set the Fed tone...
         self.assertEqual(retrieved_id["bot_guidance_vi"], "Dừng bot 30p")
         self.assertEqual(retrieved_id["bot_guidance_en"], "Pause bot 30m")
 
+    def test_symbol_related_to_currencies(self):
+        # Gold
+        self.assertTrue(news_service.is_symbol_related_to_currencies("XAUUSD", ["USD"]))
+        self.assertFalse(news_service.is_symbol_related_to_currencies("XAUUSD", ["EUR", "GBP"]))
+
+        # Forex
+        self.assertTrue(news_service.is_symbol_related_to_currencies("EURUSD", ["EUR"]))
+        self.assertTrue(news_service.is_symbol_related_to_currencies("EURUSD", ["USD"]))
+        self.assertFalse(news_service.is_symbol_related_to_currencies("EURUSD", ["AUD", "JPY"]))
+
+        # Cross FX
+        self.assertTrue(news_service.is_symbol_related_to_currencies("GBPJPY", ["JPY"]))
+        self.assertTrue(news_service.is_symbol_related_to_currencies("GBPJPY", ["GBP"]))
+        self.assertFalse(news_service.is_symbol_related_to_currencies("GBPJPY", ["USD"]))
+
+        # Indices
+        self.assertTrue(news_service.is_symbol_related_to_currencies("US30", ["USD"]))
+        self.assertFalse(news_service.is_symbol_related_to_currencies("US30", ["EUR"]))
+
+    def test_news_auto_broadcast_config_and_history(self):
+        # Default config
+        cfg = database.get_news_auto_config()
+        self.assertIn("is_enabled", cfg)
+        self.assertIn("advance_minutes", cfg)
+        self.assertIn("symbols", cfg)
+
+        # Save custom config
+        saved = database.save_news_auto_config(
+            is_enabled=True,
+            advance_minutes=45,
+            symbols=["XAUUSD", "EURUSD", "US30"]
+        )
+        self.assertTrue(saved["is_enabled"])
+        self.assertEqual(saved["advance_minutes"], 45)
+        self.assertEqual(saved["symbols"], ["XAUUSD", "EURUSD", "US30"])
+
+        # Fetch back
+        loaded = database.get_news_auto_config()
+        self.assertTrue(loaded["is_enabled"])
+        self.assertEqual(loaded["advance_minutes"], 45)
+        self.assertIn("US30", loaded["symbols"])
+
+        # Deduplication history
+        cluster_test = "hash_cluster_test_999"
+        sym = "XAUUSD"
+        self.assertFalse(database.is_news_auto_broadcasted(cluster_test, sym))
+
+        database.mark_news_auto_broadcasted(cluster_test, sym)
+        self.assertTrue(database.is_news_auto_broadcasted(cluster_test, sym))
+        self.assertFalse(database.is_news_auto_broadcasted(cluster_test, "EURUSD"))
+
 if __name__ == "__main__":
     unittest.main()
 

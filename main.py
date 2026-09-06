@@ -890,6 +890,177 @@ async def daily_morning_report_loop():
             log_message("SYSTEM", "ERROR", f"[Morning Report] Error in morning report loop: {ex}")
             await asyncio.sleep(300)
 
+async def news_auto_broadcast_loop():
+    """
+    Periodically scans upcoming high-impact economic news events.
+    When a red news event is within the user-configured advance window (e.g. 30 mins before),
+    it automatically triggers AI analysis for each relevant configured symbol,
+    saves the result to the database, and broadcasts the bilingual report to Telegram.
+    Includes strict deduplication to prevent repeated broadcasts.
+    """
+    await asyncio.sleep(20)
+    while True:
+        try:
+            cfg = database.get_news_auto_config()
+            if cfg.get("is_enabled"):
+                advance_mins = int(cfg.get("advance_minutes", 30))
+                target_symbols = cfg.get("symbols", ["XAUUSD"])
+
+                raw_events = await news_service.fetch_forexfactory_raw_events("thisweek")
+                clusters = news_service.cluster_red_news(raw_events)
+
+                now_utc = datetime.datetime.now(datetime.timezone.utc)
+
+                for cluster in clusters:
+                    time_key = cluster.get("timestamp_utc")
+                    if not time_key:
+                        continue
+
+                    dt_utc = datetime.datetime.fromisoformat(time_key.replace("Z", "+00:00"))
+                    diff_seconds = (dt_utc - now_utc).total_seconds()
+                    diff_minutes = diff_seconds / 60.0
+
+                    # Trigger if event is upcoming and within the advance window
+                    if 0 <= diff_minutes <= advance_mins:
+                        cluster_currencies = cluster.get("currencies", [])
+                        cluster_id = cluster.get("id")
+
+                        for symbol in target_symbols:
+                            sym_clean = symbol.strip().upper()
+                            if not news_service.is_symbol_related_to_currencies(sym_clean, cluster_currencies):
+                                continue
+
+                            if database.is_news_auto_broadcasted(cluster_id, sym_clean):
+                                continue
+
+                            log_message("NEWS_AUTO", "INFO", f"Automated trigger: Analyzing {sym_clean} for cluster {cluster_id} ({int(diff_minutes)}m before release)...")
+
+                            existing = database.get_news_assessment_by_cluster(cluster_id, sym_clean)
+                            assessment_data = existing
+
+                            if not assessment_data:
+                                try:
+                                    system_prompt, user_prompt = news_service.generate_news_cluster_prompt(
+                                        cluster,
+                                        symbol=sym_clean,
+                                        user_notes="Tự động phân tích trước giờ ra tin."
+                                    )
+                                    conn = get_db()
+                                    c = conn.cursor()
+                                    c.execute("SELECT * FROM ai_providers_config WHERE id = 1")
+                                    raw_cfg = c.fetchone()
+                                    conn.close()
+                                    ai_config = dict(raw_cfg) if raw_cfg else {"active_provider": "qwen_api", "qwen_model": "qwen3.7-flash"}
+
+                                    provider = ai_config.get("active_provider", "qwen_api")
+                                    model_name = ai_config.get(f"{provider.split('_')[0]}_model", "default-model")
+
+                                    raw_report, latency_ms = await ai_engine.query_llm_text(ai_config, system_prompt, user_prompt, temperature=0.3)
+                                    parsed = news_service.parse_news_ai_response(raw_report)
+
+                                    record_id = database.save_news_assessment(
+                                        cluster_hash=cluster_id,
+                                        timestamp_utc=time_key,
+                                        symbol=sym_clean,
+                                        currencies=cluster_currencies,
+                                        events=cluster.get("events", []),
+                                        volatility_level=parsed["volatility_level"],
+                                        expected_pips_range=parsed["expected_pips_range"],
+                                        trend_type=parsed["trend_type"],
+                                        prob_buy=parsed["prob_buy"],
+                                        prob_sell=parsed["prob_sell"],
+                                        scenario_better=parsed["scenario_better"],
+                                        scenario_worse=parsed["scenario_worse"],
+                                        bot_guidance=parsed["bot_guidance"],
+                                        analysis_markdown=parsed["analysis_markdown"],
+                                        ai_provider=provider,
+                                        ai_model=model_name,
+                                        latency_ms=latency_ms,
+                                        user_notes="Tự động phân tích trước giờ ra tin.",
+                                        scenario_better_vi=parsed.get("scenario_better_vi", ""),
+                                        scenario_better_en=parsed.get("scenario_better_en", ""),
+                                        scenario_worse_vi=parsed.get("scenario_worse_vi", ""),
+                                        scenario_worse_en=parsed.get("scenario_worse_en", ""),
+                                        bot_guidance_vi=parsed.get("bot_guidance_vi", ""),
+                                        bot_guidance_en=parsed.get("bot_guidance_en", ""),
+                                        analysis_markdown_vi=parsed.get("analysis_markdown_vi", ""),
+                                        analysis_markdown_en=parsed.get("analysis_markdown_en", "")
+                                    )
+                                    assessment_data = database.get_news_assessment_by_id(record_id)
+                                except Exception as ai_err:
+                                    log_message("NEWS_AUTO", "ERROR", f"Failed AI assessment for {sym_clean}: {ai_err}")
+                                    continue
+
+                            if assessment_data:
+                                try:
+                                    def _esc(t: str) -> str:
+                                        return str(t or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+                                    volatility = assessment_data.get("volatility_level", "HIGH")
+                                    pips = assessment_data.get("expected_pips_range", "")
+                                    trend = assessment_data.get("trend_type", "")
+                                    p_buy = assessment_data.get("prob_buy", 50)
+                                    p_sell = assessment_data.get("prob_sell", 50)
+                                    sc_better_vi = assessment_data.get("scenario_better_vi") or assessment_data.get("scenario_better", "")
+                                    sc_better_en = assessment_data.get("scenario_better_en") or assessment_data.get("scenario_better", "")
+                                    sc_worse_vi = assessment_data.get("scenario_worse_vi") or assessment_data.get("scenario_worse", "")
+                                    sc_worse_en = assessment_data.get("scenario_worse_en") or assessment_data.get("scenario_worse", "")
+                                    guidance_vi = assessment_data.get("bot_guidance_vi") or assessment_data.get("bot_guidance", "")
+                                    guidance_en = assessment_data.get("bot_guidance_en") or assessment_data.get("bot_guidance", "")
+                                    model = assessment_data.get("ai_model", "AI")
+
+                                    events_str = ""
+                                    for ev in cluster.get("events", [])[:4]:
+                                        fc = ev.get("forecast") or "-"
+                                        pr = ev.get("previous") or "-"
+                                        events_str += f"  • <b>[{ev.get('country')}] {_esc(ev.get('title'))}</b> (FC: {fc} | PR: {pr})\n"
+
+                                    trend_label_vi = {
+                                        "1_WAY_TREND": "⚡ Xu Hướng 1 Chiều (Clean Trend Extension)",
+                                        "2_WAY_WHIPSAW": "🌪️ Biến Động 2 Chiều (Whipsaw / Quét 2 Đầu)",
+                                        "SWEEP_THEN_TREND": "🎯 Sweep Thanh Khoản Xong Đảo Chiều (Judas Swing)"
+                                    }.get(trend, trend)
+
+                                    trend_label_en = {
+                                        "1_WAY_TREND": "⚡ 1-Way Clean Trend Extension",
+                                        "2_WAY_WHIPSAW": "🌪️ 2-Way Volatility & Whipsaw Hunt",
+                                        "SWEEP_THEN_TREND": "🎯 Liquidity Sweep & Reversal (Judas Swing)"
+                                    }.get(trend, trend)
+
+                                    telegram_msg = (
+                                        f"🚨 <b>[TỰ ĐỘNG BÁO TRƯỚC TIN ĐỎ - {int(diff_minutes)} PHÚT]</b>\n\n"
+                                        f"🎯 <b>Cặp phân tích:</b> #{sym_clean}\n"
+                                        f"⏰ <b>Thời điểm ra tin (UTC):</b> {time_key}\n"
+                                        f"⚡ <b>Mức độ biến động:</b> <b>{volatility}</b> ({pips})\n"
+                                        f"📊 <b>Hình thái giá:</b> <b>{trend_label_vi}</b>\n"
+                                        f"🎲 <b>Xác suất hướng đi:</b> 🟢 BUY <b>{p_buy}%</b> | 🔴 SELL <b>{p_sell}%</b>\n\n"
+                                        f"📋 <b>Cụm sự kiện cùng khung giờ:</b>\n{events_str}\n"
+                                        f"📈 <b>Kịch bản Thực tế &gt; Dự báo:</b>\n{_esc(sc_better_vi)}\n\n"
+                                        f"📉 <b>Kịch bản Thực tế &lt; Dự báo:</b>\n{_esc(sc_worse_vi)}\n\n"
+                                        f"🛡️ <b>Khuyến nghị cBot &amp; Quản trị rủi ro:</b>\n{_esc(guidance_vi)}\n\n"
+                                        f"═══════════════════════════\n"
+                                        f"🇬🇧 <b>INSTITUTIONAL MACRO &amp; RISK DIRECTIVES</b>\n\n"
+                                        f"🎯 <b>Instrument:</b> #{sym_clean} | <b>Volatility:</b> {volatility} ({pips})\n"
+                                        f"📊 <b>Profile:</b> {trend_label_en}\n"
+                                        f"🎲 <b>Bias:</b> BUY {p_buy}% | SELL {p_sell}%\n\n"
+                                        f"📈 <b>Scenario A (Actual &gt; Forecast):</b>\n{_esc(sc_better_en)}\n\n"
+                                        f"📉 <b>Scenario B (Actual &lt; Forecast):</b>\n{_esc(sc_worse_en)}\n\n"
+                                        f"🛡️ <b>Algorithmic cBot &amp; Execution Guidance:</b>\n{_esc(guidance_en)}\n\n"
+                                        f"🤖 <i>Tự động phân tích bởi {model} • cTrader AI Hub</i>"
+                                    )
+
+                                    await send_telegram_server_notification(telegram_msg)
+                                    database.mark_news_auto_broadcasted(cluster_id, sym_clean)
+                                    log_message("NEWS_AUTO", "INFO", f"Successfully broadcasted automated assessment for #{sym_clean} to Telegram.")
+                                    await asyncio.sleep(1.5)
+                                except Exception as tg_err:
+                                    log_message("NEWS_AUTO", "ERROR", f"Failed Telegram broadcast for {sym_clean}: {tg_err}")
+
+        except Exception as loop_err:
+            log_message("NEWS_AUTO", "ERROR", f"Error in news_auto_broadcast_loop: {loop_err}")
+
+        await asyncio.sleep(60)
+
 def cleanup_stale_positions_on_startup():
     """
     Startup cleanup: deletes all open positions in the DB belonging to accounts
@@ -949,6 +1120,7 @@ async def startup_event():
     asyncio.create_task(auto_refresh_open_api_tokens_loop())
     asyncio.create_task(bot_watchdog_loop())
     asyncio.create_task(daily_morning_report_loop())
+    asyncio.create_task(news_auto_broadcast_loop())
     
     # Send Telegram Startup Alert
     try:
@@ -4042,6 +4214,11 @@ class NewsShareTelegramRequest(BaseModel):
     cluster_hash: Optional[str] = None
     symbol: Optional[str] = "XAUUSD"
 
+class NewsAutoConfigRequest(BaseModel):
+    is_enabled: bool
+    advance_minutes: int = 30
+    symbols: List[str] = ["XAUUSD"]
+
 @app.get("/api/news/calendar")
 async def get_news_calendar_endpoint(
     request: Request,
@@ -4262,6 +4439,36 @@ async def share_news_telegram_endpoint(req: NewsShareTelegramRequest, request: R
         raise HTTPException(status_code=500, detail="Không thể gửi thông báo qua Telegram. Vui lòng kiểm tra file telegram.env.")
 
     return {"status": "success", "message": "Bản đánh giá tin tức đã được chia sẻ lên nhóm Telegram thành công!"}
+
+@app.get("/api/news/auto-config")
+async def get_news_auto_config_endpoint(request: Request):
+    get_current_user(request)
+    return database.get_news_auto_config()
+
+@app.post("/api/news/auto-config")
+async def save_news_auto_config_endpoint(req: NewsAutoConfigRequest, request: Request):
+    require_admin(request)
+    res = database.save_news_auto_config(req.is_enabled, req.advance_minutes, req.symbols)
+    log_message("NEWS_AUTO", "INFO", f"Updated news auto broadcast config: enabled={req.is_enabled}, advance={req.advance_minutes}m, symbols={req.symbols}")
+    return {"status": "success", "config": res}
+
+@app.post("/api/news/test-telegram")
+async def test_news_telegram_endpoint(request: Request):
+    require_admin(request)
+    now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    test_msg = (
+        "🔔 <b>[cTrader AI Hub] KIỂM TRA KẾT NỐI TELEGRAM (TEST NOTIFICATION)</b>\n\n"
+        "🟢 <b>Trạng thái:</b> Bot Telegram đã kết nối thành công và sẵn sàng nhận thông báo tự động trước giờ tin đỏ (Red News)!\n"
+        f"⏰ <b>Thời gian kiểm tra:</b> {now_str}\n\n"
+        "═══════════════════════════\n"
+        "🇬🇧 <b>TELEGRAM NOTIFICATION CONNECTIVITY VERIFIED</b>\n"
+        "Status: Operational & Ready for Pre-News Automated Analysis.\n"
+        "🤖 <i>cTrader AI Trading Hub Engine</i>"
+    )
+    success = await send_telegram_server_notification(test_msg)
+    if not success:
+        raise HTTPException(status_code=500, detail="Không thể gửi tin nhắn qua Telegram. Vui lòng kiểm tra cấu hình telegram.env.")
+    return {"status": "success", "message": "Đã gửi tin nhắn thử nghiệm thành công tới Telegram!"}
 
 @app.get("/api/history")
 async def get_trade_history(
