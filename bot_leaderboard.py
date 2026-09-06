@@ -79,8 +79,15 @@ def compute_bot_leaderboard() -> Dict[str, Any]:
     c = conn.cursor()
 
     # 1. Fetch configured bot instances
-    c.execute("SELECT id, name, symbol, timeframe, status, account_id, created_at, custom_params FROM bot_instances ORDER BY id ASC")
+    c.execute("SELECT id, name, symbol, timeframe, status, account_id, account_type, created_at, custom_params FROM bot_instances ORDER BY id ASC")
     raw_bots = [dict(r) for r in c.fetchall()]
+
+    # 1b. Fetch accounts to provide fallback account_type mapping
+    try:
+        c.execute("SELECT account_id, account_type FROM accounts")
+        acc_type_map = {str(r["account_id"]): (r["account_type"] or "demo").lower() for r in c.fetchall()}
+    except Exception:
+        acc_type_map = {}
 
     # 2. Fetch trade history
     c.execute("SELECT * FROM history ORDER BY id DESC")
@@ -101,6 +108,7 @@ def compute_bot_leaderboard() -> Dict[str, Any]:
         b_timeframe = b["timeframe"]
         b_status = b["status"]
         b_account = b["account_id"]
+        b_acc_type = (b.get("account_type") or acc_type_map.get(str(b_account), "demo")).lower()
 
         # Match history trades for this bot using accurate symbol- and account-aware comparison
         bot_trades = [t for t in raw_history if is_item_match_bot(t, b)]
@@ -187,6 +195,7 @@ def compute_bot_leaderboard() -> Dict[str, Any]:
             "timeframe": b_timeframe,
             "status": b_status,
             "account_id": b_account,
+            "account_type": b_acc_type,
             "total_trades": total_trades,
             "total_wins": total_wins,
             "total_losses": total_losses,
