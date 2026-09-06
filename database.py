@@ -471,9 +471,34 @@ def init_db():
             ai_model TEXT,
             latency_ms INTEGER DEFAULT 0,
             user_notes TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            scenario_better_vi TEXT,
+            scenario_better_en TEXT,
+            scenario_worse_vi TEXT,
+            scenario_worse_en TEXT,
+            bot_guidance_vi TEXT,
+            bot_guidance_en TEXT,
+            analysis_markdown_vi TEXT,
+            analysis_markdown_en TEXT
         )
     ''')
+
+    # Migration for existing news_ai_assessments table
+    bilingual_news_cols = [
+        "scenario_better_vi TEXT",
+        "scenario_better_en TEXT",
+        "scenario_worse_vi TEXT",
+        "scenario_worse_en TEXT",
+        "bot_guidance_vi TEXT",
+        "bot_guidance_en TEXT",
+        "analysis_markdown_vi TEXT",
+        "analysis_markdown_en TEXT"
+    ]
+    for col_def in bilingual_news_cols:
+        try:
+            c.execute(f"ALTER TABLE news_ai_assessments ADD COLUMN {col_def}")
+        except Exception:
+            pass
 
     # Performance B-Tree Indexes
     indexes = [
@@ -986,7 +1011,15 @@ def save_news_assessment(
     ai_provider: str,
     ai_model: str,
     latency_ms: int = 0,
-    user_notes: str = ""
+    user_notes: str = "",
+    scenario_better_vi: str = "",
+    scenario_better_en: str = "",
+    scenario_worse_vi: str = "",
+    scenario_worse_en: str = "",
+    bot_guidance_vi: str = "",
+    bot_guidance_en: str = "",
+    analysis_markdown_vi: str = "",
+    analysis_markdown_en: str = ""
 ) -> int:
     """
     Saves an AI economic news assessment into SQLite and returns the record ID.
@@ -1002,14 +1035,18 @@ def save_news_assessment(
             cluster_hash, timestamp_utc, symbol, currencies, events_json,
             volatility_level, expected_pips_range, trend_type, prob_buy, prob_sell,
             scenario_better, scenario_worse, bot_guidance, analysis_markdown,
-            ai_provider, ai_model, latency_ms, user_notes, created_at
+            ai_provider, ai_model, latency_ms, user_notes, created_at,
+            scenario_better_vi, scenario_better_en, scenario_worse_vi, scenario_worse_en,
+            bot_guidance_vi, bot_guidance_en, analysis_markdown_vi, analysis_markdown_en
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         cluster_hash, timestamp_utc, symbol.strip().upper(), currencies_json, events_json,
         volatility_level, expected_pips_range, trend_type, prob_buy, prob_sell,
         scenario_better, scenario_worse, bot_guidance, analysis_markdown,
-        ai_provider, ai_model, latency_ms, user_notes, created_at
+        ai_provider, ai_model, latency_ms, user_notes, created_at,
+        scenario_better_vi, scenario_better_en, scenario_worse_vi, scenario_worse_en,
+        bot_guidance_vi, bot_guidance_en, analysis_markdown_vi, analysis_markdown_en
     ))
     record_id = c.lastrowid
     conn.commit()

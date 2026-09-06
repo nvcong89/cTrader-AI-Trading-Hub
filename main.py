@@ -4126,7 +4126,15 @@ async def assess_news_cluster_endpoint(req: NewsAssessRequest, request: Request)
             ai_provider=provider,
             ai_model=model_name,
             latency_ms=latency_ms,
-            user_notes=req.user_notes or ""
+            user_notes=req.user_notes or "",
+            scenario_better_vi=parsed.get("scenario_better_vi", ""),
+            scenario_better_en=parsed.get("scenario_better_en", ""),
+            scenario_worse_vi=parsed.get("scenario_worse_vi", ""),
+            scenario_worse_en=parsed.get("scenario_worse_en", ""),
+            bot_guidance_vi=parsed.get("bot_guidance_vi", ""),
+            bot_guidance_en=parsed.get("bot_guidance_en", ""),
+            analysis_markdown_vi=parsed.get("analysis_markdown_vi", ""),
+            analysis_markdown_en=parsed.get("analysis_markdown_en", "")
         )
 
         return {
@@ -4142,9 +4150,17 @@ async def assess_news_cluster_endpoint(req: NewsAssessRequest, request: Request)
                 "prob_sell": parsed["prob_sell"],
                 "scenario_better": parsed["scenario_better"],
                 "scenario_worse": parsed["scenario_worse"],
-                "bot_guidance": parsed["bot_guidance"]
+                "bot_guidance": parsed["bot_guidance"],
+                "scenario_better_vi": parsed.get("scenario_better_vi", ""),
+                "scenario_better_en": parsed.get("scenario_better_en", ""),
+                "scenario_worse_vi": parsed.get("scenario_worse_vi", ""),
+                "scenario_worse_en": parsed.get("scenario_worse_en", ""),
+                "bot_guidance_vi": parsed.get("bot_guidance_vi", ""),
+                "bot_guidance_en": parsed.get("bot_guidance_en", "")
             },
             "analysis_markdown": parsed["analysis_markdown"],
+            "analysis_markdown_vi": parsed.get("analysis_markdown_vi", ""),
+            "analysis_markdown_en": parsed.get("analysis_markdown_en", ""),
             "ai_provider": provider,
             "ai_model": model_name,
             "latency_ms": latency_ms
@@ -4185,23 +4201,38 @@ async def share_news_telegram_endpoint(req: NewsShareTelegramRequest, request: R
     trend = assessment.get("trend_type", "")
     p_buy = assessment.get("prob_buy", 50)
     p_sell = assessment.get("prob_sell", 50)
-    sc_better = assessment.get("scenario_better", "")
-    sc_worse = assessment.get("scenario_worse", "")
-    guidance = assessment.get("bot_guidance", "")
+
+    # Bilingual content resolution with fallback
+    sc_better_vi = assessment.get("scenario_better_vi") or assessment.get("scenario_better", "")
+    sc_better_en = assessment.get("scenario_better_en") or assessment.get("scenario_better", "")
+    sc_worse_vi = assessment.get("scenario_worse_vi") or assessment.get("scenario_worse", "")
+    sc_worse_en = assessment.get("scenario_worse_en") or assessment.get("scenario_worse", "")
+    guidance_vi = assessment.get("bot_guidance_vi") or assessment.get("bot_guidance", "")
+    guidance_en = assessment.get("bot_guidance_en") or assessment.get("bot_guidance", "")
+
     events = assessment.get("events", [])
     model = assessment.get("ai_model", "AI")
     time_utc = assessment.get("timestamp_utc", "")
+
+    def _esc(t: str) -> str:
+        return str(t or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     events_str = ""
     for ev in events[:4]:
         fc = ev.get("forecast") or "-"
         pr = ev.get("previous") or "-"
-        events_str += f"  • <b>[{ev.get('country')}] {ev.get('title')}</b> (FC: {fc} | PR: {pr})\n"
+        events_str += f"  • <b>[{ev.get('country')}] {_esc(ev.get('title'))}</b> (FC: {fc} | PR: {pr})\n"
 
-    trend_label = {
+    trend_label_vi = {
         "1_WAY_TREND": "⚡ Xu Hướng 1 Chiều (Clean Trend Extension)",
         "2_WAY_WHIPSAW": "🌪️ Biến Động 2 Chiều (Whipsaw / Quét 2 Đầu)",
         "SWEEP_THEN_TREND": "🎯 Sweep Thanh Khoản Xong Đảo Chiều (Judas Swing)"
+    }.get(trend, trend)
+
+    trend_label_en = {
+        "1_WAY_TREND": "⚡ 1-Way Clean Trend Extension",
+        "2_WAY_WHIPSAW": "🌪️ 2-Way Volatility & Whipsaw Hunt",
+        "SWEEP_THEN_TREND": "🎯 Liquidity Sweep & Reversal (Judas Swing)"
     }.get(trend, trend)
 
     telegram_msg = (
@@ -4209,13 +4240,21 @@ async def share_news_telegram_endpoint(req: NewsShareTelegramRequest, request: R
         f"🎯 <b>Cặp phân tích:</b> #{symbol}\n"
         f"⏰ <b>Thời điểm ra tin (UTC):</b> {time_utc}\n"
         f"⚡ <b>Mức độ biến động:</b> <b>{volatility}</b> ({pips})\n"
-        f"📊 <b>Hình thái giá:</b> <b>{trend_label}</b>\n"
+        f"📊 <b>Hình thái giá:</b> <b>{trend_label_vi}</b>\n"
         f"🎲 <b>Xác suất hướng đi:</b> 🟢 BUY <b>{p_buy}%</b> | 🔴 SELL <b>{p_sell}%</b>\n\n"
         f"📋 <b>Cụm sự kiện cùng khung giờ:</b>\n{events_str}\n"
-        f"📈 <b>Kịch bản Số liệu Thực tế > Dự báo:</b>\n{sc_better}\n\n"
-        f"📉 <b>Kịch bản Số liệu Thực tế < Dự báo:</b>\n{sc_worse}\n\n"
-        f"🛡️ <b>Khuyến nghị cBot & Quản trị rủi ro:</b>\n{guidance}\n\n"
-        f"🤖 <i>Phân tích bởi {model} • cTrader AI Trading Hub</i>"
+        f"📈 <b>Kịch bản Thực tế &gt; Dự báo:</b>\n{_esc(sc_better_vi)}\n\n"
+        f"📉 <b>Kịch bản Thực tế &lt; Dự báo:</b>\n{_esc(sc_worse_vi)}\n\n"
+        f"🛡️ <b>Khuyến nghị cBot &amp; Quản trị rủi ro:</b>\n{_esc(guidance_vi)}\n\n"
+        f"═══════════════════════════\n"
+        f"🇬🇧 <b>INSTITUTIONAL MACRO &amp; RISK DIRECTIVES</b>\n\n"
+        f"🎯 <b>Instrument:</b> #{symbol} | <b>Volatility:</b> {volatility} ({pips})\n"
+        f"📊 <b>Profile:</b> {trend_label_en}\n"
+        f"🎲 <b>Bias:</b> BUY {p_buy}% | SELL {p_sell}%\n\n"
+        f"📈 <b>Scenario A (Actual &gt; Forecast):</b>\n{_esc(sc_better_en)}\n\n"
+        f"📉 <b>Scenario B (Actual &lt; Forecast):</b>\n{_esc(sc_worse_en)}\n\n"
+        f"🛡️ <b>Algorithmic cBot &amp; Execution Guidance:</b>\n{_esc(guidance_en)}\n\n"
+        f"🤖 <i>Analyzed by {model} • cTrader AI Trading Hub</i>"
     )
 
     success = await send_telegram_server_notification(telegram_msg)

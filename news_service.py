@@ -221,14 +221,13 @@ You MUST evaluate:
      * "SWEEP_THEN_TREND": Initial liquidity sweep / Judas Swing against the true fundamental direction, followed by strong reversal into the real trend.
 5. Probabilities:
    - Estimate the probability of an overall BUY bias (%) vs SELL bias (%), ensuring they sum to 100%.
-6. Bifurcated Scenario Analysis:
-   - Scenario A: If Actual data is Better than Forecast (Actual > Forecast).
-   - Scenario B: If Actual data is Worse than Forecast (Actual < Forecast).
-7. Guidance for Algorithmic cBots & Human Traders:
-   - Recommended blackout suspension window (e.g. pause 30 mins before, resume 30 mins after), or specific breakout / Judas sweep entry tactics.
+6. Bilingual Bifurcated Scenario Analysis:
+   - Provide both Vietnamese and English explanations for Scenario A (Actual > Forecast) and Scenario B (Actual < Forecast).
+7. Bilingual cBot & Trader Guidance:
+   - Provide clear actionable instructions in both Vietnamese and English regarding blackout windows, scalping hazards, and SMC entry blueprints.
 
 IMPORTANT FORMAT REQUIREMENT:
-You MUST start your response with a valid JSON block enclosed in ```json ... ``` with the exact schema below, followed by an in-depth professional Markdown report:
+You MUST start your response with a valid JSON block enclosed in ```json ... ``` with the exact schema below, followed by an in-depth bilingual Markdown report:
 
 ```json
 {
@@ -237,17 +236,30 @@ You MUST start your response with a valid JSON block enclosed in ```json ... ```
   "trend_type": "2_WAY_WHIPSAW",
   "prob_buy": 65.0,
   "prob_sell": 35.0,
-  "scenario_better": "If Actual > Forecast: USD surges, Treasury yields spike, forcing target symbol to drop sharply to test lower key support.",
-  "scenario_worse": "If Actual < Forecast: USD plummets on rate-cut expectations, propelling target symbol into aggressive bullish breakout.",
-  "bot_guidance": "Suspend grid and scalping bots 30 minutes before release. For Judas Sweep bots, monitor M1/M5 sweep of previous swing highs/lows before entering."
+  "scenario_better_vi": "Nếu Thực tế > Dự báo: USD bật tăng mạnh, lợi suất TPCP Mỹ tăng vọt, gây áp lực khiến giá vàng giảm mạnh về kiểm tra vùng hỗ trợ.",
+  "scenario_better_en": "If Actual > Forecast: USD surges, Treasury yields spike, forcing target symbol to drop sharply to test lower key support.",
+  "scenario_worse_vi": "Nếu Thực tế < Dự báo: USD lao dốc trước kỳ vọng nới lỏng chính sách, kích hoạt đà bứt phá tăng giá mạnh cho cặp tiền/vàng.",
+  "scenario_worse_en": "If Actual < Forecast: USD plummets on rate-cut expectations, propelling target symbol into aggressive bullish breakout.",
+  "bot_guidance_vi": "Tạm dừng các bot Grid và Scalping trước giờ tin 30 phút. Đối với bot săn thanh khoản Judas Sweep, theo dõi tín hiệu quét đỉnh/đáy M1/M5 trước khi vào lệnh.",
+  "bot_guidance_en": "Suspend grid and scalping bots 30 minutes before release. For Judas Sweep bots, monitor M1/M5 sweep of previous swing highs/lows before entering."
 }
 ```
 
-After the JSON block, provide a well-structured, formatted Markdown analysis containing:
-- 📊 Executive Macro Summary
-- ⚡ Inter-Indicator Dynamics & Potential Conflicts
-- 🎯 SMC Liquidity & Price Reaction Blueprint for the Target Symbol
-- 🛡️ Tactical Risk & Order Execution Recommendations
+After the JSON block, provide a comprehensive bilingual Markdown analysis structured with two distinct section comments:
+
+<!-- SECTION_VI -->
+### 🇻🇳 PHÂN TÍCH VĨ MÔ & KỊCH BẢN SMC (TIẾNG VIỆT)
+- 📊 **Tóm Tắt Vĩ Mô & Tác Động Chung**: ...
+- ⚡ **Tương Quan Giữa Các Chỉ Số & Xung Đột Dữ Liệu**: ...
+- 🎯 **Kịch Bản Thanh Khoản SMC & Điểm Phản Ứng Giá**: ...
+- 🛡️ **Chiến Lược Quản Trị Rủi Ro & Lệnh Giao Dịch cBot**: ...
+
+<!-- SECTION_EN -->
+### 🇬🇧 INSTITUTIONAL MACRO & SMC ORDER FLOW ANALYSIS (ENGLISH)
+- 📊 **Executive Macro Summary**: ...
+- ⚡ **Inter-Indicator Dynamics & Potential Conflicts**: ...
+- 🎯 **SMC Liquidity & Price Reaction Blueprint for Target Symbol**: ...
+- 🛡️ **Tactical Risk & cBot Execution Recommendations**: ...
 """
 
     events_summary_lines = []
@@ -266,13 +278,14 @@ Target Symbol to Analyze: {symbol.strip().upper()}
 Simultaneous High-Impact Events ({len(cluster.get('events', []))} events):
 {events_text}{user_notes_section}
 
-Please provide your rigorous institutional assessment following the required JSON schema and Markdown report structure.
+Please provide your rigorous institutional assessment following the required bilingual JSON schema and Markdown report structure.
 """
     return system_prompt, user_prompt
 
 def parse_news_ai_response(raw_text: str) -> Dict[str, Any]:
     """
-    Extracts structured JSON metrics and separate Markdown report from LLM response.
+    Extracts structured JSON metrics and separate bilingual Markdown report from LLM response.
+    Supports both legacy single-language responses and new bilingual responses with fallbacks.
     """
     clean_text = raw_text.strip()
     
@@ -321,12 +334,76 @@ def parse_news_ai_response(raw_text: str) -> Dict[str, Any]:
         prob_sell = round(100.0 - prob_buy, 1)
 
     expected_pips = str(json_data.get("expected_pips_range") or "100 - 250 pips").strip()
-    scenario_better = str(json_data.get("scenario_better") or "If actual data surpasses expectations, expect bullish continuation for the base currency.").strip()
-    scenario_worse = str(json_data.get("scenario_worse") or "If actual data falls short, expect rapid re-pricing and reversal against forecast.").strip()
-    bot_guidance = str(json_data.get("bot_guidance") or "Maintain minimum 30-minute pre-news blackout and avoid tight stop loss placement.").strip()
+    
+    # Bilingual fields extraction with graceful cross-fallbacks
+    scenario_better_vi = str(json_data.get("scenario_better_vi") or "").strip()
+    scenario_better_en = str(json_data.get("scenario_better_en") or "").strip()
+    scenario_worse_vi = str(json_data.get("scenario_worse_vi") or "").strip()
+    scenario_worse_en = str(json_data.get("scenario_worse_en") or "").strip()
+    bot_guidance_vi = str(json_data.get("bot_guidance_vi") or "").strip()
+    bot_guidance_en = str(json_data.get("bot_guidance_en") or "").strip()
+
+    # Legacy fields fallback
+    legacy_better = str(json_data.get("scenario_better") or "").strip()
+    legacy_worse = str(json_data.get("scenario_worse") or "").strip()
+    legacy_guidance = str(json_data.get("bot_guidance") or "").strip()
+
+    if not scenario_better_vi and legacy_better:
+        scenario_better_vi = legacy_better
+    if not scenario_better_en:
+        scenario_better_en = legacy_better or scenario_better_vi or "If actual data surpasses expectations, expect bullish continuation for the base currency."
+    if not scenario_better_vi:
+        scenario_better_vi = scenario_better_en
+
+    if not scenario_worse_vi and legacy_worse:
+        scenario_worse_vi = legacy_worse
+    if not scenario_worse_en:
+        scenario_worse_en = legacy_worse or scenario_worse_vi or "If actual data falls short, expect rapid re-pricing and reversal against forecast."
+    if not scenario_worse_vi:
+        scenario_worse_vi = scenario_worse_en
+
+    if not bot_guidance_vi and legacy_guidance:
+        bot_guidance_vi = legacy_guidance
+    if not bot_guidance_en:
+        bot_guidance_en = legacy_guidance or bot_guidance_vi or "Maintain minimum 30-minute pre-news blackout and avoid tight stop loss placement."
+    if not bot_guidance_vi:
+        bot_guidance_vi = bot_guidance_en
+
+    scenario_better = scenario_better_vi
+    scenario_worse = scenario_worse_vi
+    bot_guidance = bot_guidance_vi
 
     if not markdown_report or len(markdown_report) < 30:
         markdown_report = clean_text
+
+    # Extract Vietnamese and English markdown sections
+    analysis_markdown_vi = ""
+    analysis_markdown_en = ""
+
+    if "<!-- SECTION_VI -->" in markdown_report and "<!-- SECTION_EN -->" in markdown_report:
+        parts = markdown_report.split("<!-- SECTION_EN -->")
+        analysis_markdown_vi = parts[0].replace("<!-- SECTION_VI -->", "").strip()
+        analysis_markdown_en = parts[1].strip() if len(parts) > 1 else ""
+    elif "<!-- SECTION_VI -->" in markdown_report:
+        analysis_markdown_vi = markdown_report.replace("<!-- SECTION_VI -->", "").strip()
+        analysis_markdown_en = analysis_markdown_vi
+    elif "<!-- SECTION_EN -->" in markdown_report:
+        analysis_markdown_en = markdown_report.replace("<!-- SECTION_EN -->", "").strip()
+        analysis_markdown_vi = analysis_markdown_en
+    else:
+        # Split by English header pattern if comments weren't retained
+        match_split = re.split(r'(?=###\s*(?:🇬🇧|ENGLISH|Institutional Macro|INSTITUTIONAL MACRO))', markdown_report, flags=re.IGNORECASE)
+        if len(match_split) >= 2:
+            analysis_markdown_vi = match_split[0].strip()
+            analysis_markdown_en = match_split[1].strip()
+        else:
+            analysis_markdown_vi = markdown_report
+            analysis_markdown_en = markdown_report
+
+    if not analysis_markdown_vi:
+        analysis_markdown_vi = markdown_report
+    if not analysis_markdown_en:
+        analysis_markdown_en = markdown_report
 
     return {
         "volatility_level": volatility,
@@ -337,5 +414,13 @@ def parse_news_ai_response(raw_text: str) -> Dict[str, Any]:
         "scenario_better": scenario_better,
         "scenario_worse": scenario_worse,
         "bot_guidance": bot_guidance,
-        "analysis_markdown": markdown_report
+        "scenario_better_vi": scenario_better_vi,
+        "scenario_better_en": scenario_better_en,
+        "scenario_worse_vi": scenario_worse_vi,
+        "scenario_worse_en": scenario_worse_en,
+        "bot_guidance_vi": bot_guidance_vi,
+        "bot_guidance_en": bot_guidance_en,
+        "analysis_markdown": markdown_report,
+        "analysis_markdown_vi": analysis_markdown_vi,
+        "analysis_markdown_en": analysis_markdown_en
     }

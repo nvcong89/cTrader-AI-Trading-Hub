@@ -18,7 +18,8 @@ import {
   X,
   Calendar,
   Sparkles,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Globe
 } from 'lucide-react';
 
 interface NewsEventItem {
@@ -63,6 +64,14 @@ interface AssessmentRecord {
   scenario_worse: string;
   bot_guidance: string;
   analysis_markdown: string;
+  scenario_better_vi?: string;
+  scenario_better_en?: string;
+  scenario_worse_vi?: string;
+  scenario_worse_en?: string;
+  bot_guidance_vi?: string;
+  bot_guidance_en?: string;
+  analysis_markdown_vi?: string;
+  analysis_markdown_en?: string;
   ai_provider?: string;
   ai_model?: string;
   latency_ms?: number;
@@ -94,6 +103,7 @@ export default function NewsAssessmentTab({ isGuest = false }: NewsAssessmentTab
   const [userNotes, setUserNotes] = useState<string>('');
   const [isAssessing, setIsAssessing] = useState<boolean>(false);
   const [activeAssessment, setActiveAssessment] = useState<AssessmentRecord | null>(null);
+  const [activeLang, setActiveLang] = useState<'vi' | 'en'>('vi');
 
   // History Drawer State
   const [isHistoryOpen, setIsHistoryOpen] = useState<boolean>(false);
@@ -213,7 +223,15 @@ export default function NewsAssessmentTab({ isGuest = false }: NewsAssessmentTab
           scenario_better: res.data.metrics.scenario_better,
           scenario_worse: res.data.metrics.scenario_worse,
           bot_guidance: res.data.metrics.bot_guidance,
+          scenario_better_vi: res.data.metrics.scenario_better_vi,
+          scenario_better_en: res.data.metrics.scenario_better_en,
+          scenario_worse_vi: res.data.metrics.scenario_worse_vi,
+          scenario_worse_en: res.data.metrics.scenario_worse_en,
+          bot_guidance_vi: res.data.metrics.bot_guidance_vi,
+          bot_guidance_en: res.data.metrics.bot_guidance_en,
           analysis_markdown: res.data.analysis_markdown,
+          analysis_markdown_vi: res.data.analysis_markdown_vi,
+          analysis_markdown_en: res.data.analysis_markdown_en,
           ai_provider: res.data.ai_provider,
           ai_model: res.data.ai_model,
           latency_ms: res.data.latency_ms,
@@ -951,38 +969,109 @@ export default function NewsAssessmentTab({ isGuest = false }: NewsAssessmentTab
               {/* Assessment Results Section */}
               {activeAssessment && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', marginTop: '0.5rem' }}>
+                  {/* Bilingual Language Switcher Bar */}
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      background: 'rgba(15, 23, 42, 0.75)',
+                      padding: '0.5rem 0.85rem',
+                      borderRadius: '10px',
+                      border: '1px solid rgba(255, 255, 255, 0.1)',
+                      boxShadow: '0 2px 8px rgba(0,0,0,0.2)'
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', color: '#94a3b8', fontWeight: 700 }}>
+                      <Globe size={16} color="#38bdf8" />
+                      <span>Ngôn Ngữ Báo Cáo / Display Language:</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.4rem' }}>
+                      <button
+                        id="btn-lang-vi"
+                        onClick={() => setActiveLang('vi')}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.4rem',
+                          padding: '0.35rem 0.85rem',
+                          borderRadius: '8px',
+                          fontSize: '0.8rem',
+                          fontWeight: 800,
+                          cursor: 'pointer',
+                          background: activeLang === 'vi' ? 'rgba(14, 165, 233, 0.25)' : 'rgba(30, 41, 59, 0.6)',
+                          color: activeLang === 'vi' ? '#38bdf8' : '#94a3b8',
+                          border: activeLang === 'vi' ? '1px solid #38bdf8' : '1px solid rgba(255, 255, 255, 0.08)',
+                          boxShadow: activeLang === 'vi' ? '0 0 10px rgba(56, 189, 248, 0.2)' : 'none',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        <span>🇻🇳</span>
+                        <span>Tiếng Việt</span>
+                      </button>
+                      <button
+                        id="btn-lang-en"
+                        onClick={() => setActiveLang('en')}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.4rem',
+                          padding: '0.35rem 0.85rem',
+                          borderRadius: '8px',
+                          fontSize: '0.8rem',
+                          fontWeight: 800,
+                          cursor: 'pointer',
+                          background: activeLang === 'en' ? 'rgba(14, 165, 233, 0.25)' : 'rgba(30, 41, 59, 0.6)',
+                          color: activeLang === 'en' ? '#38bdf8' : '#94a3b8',
+                          border: activeLang === 'en' ? '1px solid #38bdf8' : '1px solid rgba(255, 255, 255, 0.08)',
+                          boxShadow: activeLang === 'en' ? '0 0 10px rgba(56, 189, 248, 0.2)' : 'none',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        <span>🇬🇧</span>
+                        <span>English</span>
+                      </button>
+                    </div>
+                  </div>
+
                   {/* Executive Quantitative HUD (4 Cards) */}
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.85rem' }}>
                     {/* Card 1: Volatility */}
                     <div style={{ background: 'rgba(30, 41, 59, 0.6)', border: '1px solid rgba(255, 255, 255, 0.08)', borderRadius: '10px', padding: '1rem' }}>
                       <div style={{ color: '#94a3b8', fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase' }}>
-                        Mức Độ Biến Động
+                        {activeLang === 'vi' ? 'Mức Độ Biến Động' : 'Volatility Magnitude'}
                       </div>
                       <div style={{ fontSize: '1.25rem', fontWeight: 800, color: activeAssessment.volatility_level === 'EXTREME' ? '#ef4444' : '#f59e0b', marginTop: '0.25rem' }}>
                         {activeAssessment.volatility_level}
                       </div>
                       <div style={{ fontSize: '0.78rem', color: '#cbd5e1', marginTop: '0.2rem' }}>
-                        Biên độ: <strong>{activeAssessment.expected_pips_range}</strong>
+                        {activeLang === 'vi' ? 'Biên độ: ' : 'Expected Range: '}<strong>{activeAssessment.expected_pips_range}</strong>
                       </div>
                     </div>
 
                     {/* Card 2: Trend Type */}
                     <div style={{ background: 'rgba(30, 41, 59, 0.6)', border: '1px solid rgba(255, 255, 255, 0.08)', borderRadius: '10px', padding: '1rem' }}>
                       <div style={{ color: '#94a3b8', fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase' }}>
-                        Hình Thái Di Chuyển
+                        {activeLang === 'vi' ? 'Hình Thái Di Chuyển' : 'Movement Profile'}
                       </div>
                       <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#38bdf8', marginTop: '0.25rem' }}>
-                        {activeAssessment.trend_type === '1_WAY_TREND' ? '⚡ 1 Chiều (Trend Extension)' : activeAssessment.trend_type === 'SWEEP_THEN_TREND' ? '🎯 Sweep Xong Đảo Chiều' : '🌪️ 2 Chiều (Whipsaw / Hunt)'}
+                        {activeAssessment.trend_type === '1_WAY_TREND'
+                          ? (activeLang === 'vi' ? '⚡ 1 Chiều (Trend Extension)' : '⚡ 1-Way Clean Trend')
+                          : activeAssessment.trend_type === 'SWEEP_THEN_TREND'
+                            ? (activeLang === 'vi' ? '🎯 Sweep Xong Đảo Chiều' : '🎯 Sweep & Reversal')
+                            : (activeLang === 'vi' ? '🌪️ 2 Chiều (Whipsaw / Hunt)' : '🌪️ 2-Way Volatility Hunt')}
                       </div>
                       <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginTop: '0.2rem' }}>
-                        {activeAssessment.trend_type === '1_WAY_TREND' ? 'Lực mở rộng dứt khoát' : 'Quét râu 2 đầu trước khi chọn hướng'}
+                        {activeAssessment.trend_type === '1_WAY_TREND'
+                          ? (activeLang === 'vi' ? 'Lực mở rộng dứt khoát' : 'Aggressive directional momentum')
+                          : (activeLang === 'vi' ? 'Quét râu 2 đầu trước khi chọn hướng' : 'Two-sided liquidity sweep before trend')}
                       </div>
                     </div>
 
                     {/* Card 3: Probability Buy vs Sell */}
                     <div style={{ background: 'rgba(30, 41, 59, 0.6)', border: '1px solid rgba(255, 255, 255, 0.08)', borderRadius: '10px', padding: '1rem' }}>
                       <div style={{ color: '#94a3b8', fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase' }}>
-                        Xác Suất Hướng Đi #{activeAssessment.symbol}
+                        {activeLang === 'vi' ? `Xác Suất Hướng Đi #${activeAssessment.symbol}` : `Direction Bias #${activeAssessment.symbol}`}
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.25rem', fontSize: '0.875rem', fontWeight: 800 }}>
                         <span style={{ color: '#34d399' }}>BUY {activeAssessment.prob_buy}%</span>
@@ -997,13 +1086,13 @@ export default function NewsAssessmentTab({ isGuest = false }: NewsAssessmentTab
                     {/* Card 4: AI Model & Latency */}
                     <div style={{ background: 'rgba(30, 41, 59, 0.6)', border: '1px solid rgba(255, 255, 255, 0.08)', borderRadius: '10px', padding: '1rem' }}>
                       <div style={{ color: '#94a3b8', fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase' }}>
-                        Động Cơ Phân Tích
+                        {activeLang === 'vi' ? 'Động Cơ Phân Tích' : 'AI Engine Model'}
                       </div>
                       <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#c084fc', marginTop: '0.25rem' }}>
                         {activeAssessment.ai_model || 'AI Engine'}
                       </div>
                       <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginTop: '0.2rem' }}>
-                        Thời gian xử lý: {activeAssessment.latency_ms || 0}ms
+                        {activeLang === 'vi' ? 'Thời gian xử lý: ' : 'Processing latency: '}{activeAssessment.latency_ms || 0}ms
                       </div>
                     </div>
                   </div>
@@ -1012,19 +1101,25 @@ export default function NewsAssessmentTab({ isGuest = false }: NewsAssessmentTab
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '0.85rem' }}>
                     <div style={{ background: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '10px', padding: '1rem' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', color: '#34d399', fontSize: '0.825rem', fontWeight: 800 }}>
-                        <TrendingUp size={16} /> KỊCH BẢN A: THỰC TẾ &gt; DỰ BÁO (BETTER)
+                        <TrendingUp size={16} />
+                        {activeLang === 'vi' ? 'KỊCH BẢN A: THỰC TẾ > DỰ BÁO (BETTER)' : 'SCENARIO A: ACTUAL > FORECAST (BETTER)'}
                       </div>
                       <div style={{ fontSize: '0.825rem', color: '#f8fafc', marginTop: '0.45rem', lineHeight: 1.5 }}>
-                        {activeAssessment.scenario_better}
+                        {activeLang === 'vi'
+                          ? (activeAssessment.scenario_better_vi || activeAssessment.scenario_better)
+                          : (activeAssessment.scenario_better_en || activeAssessment.scenario_better)}
                       </div>
                     </div>
 
                     <div style={{ background: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '10px', padding: '1rem' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', color: '#f87171', fontSize: '0.825rem', fontWeight: 800 }}>
-                        <TrendingDown size={16} /> KỊCH BẢN B: THỰC TẾ &lt; DỰ BÁO (WORSE)
+                        <TrendingDown size={16} />
+                        {activeLang === 'vi' ? 'KỊCH BẢN B: THỰC TẾ < DỰ BÁO (WORSE)' : 'SCENARIO B: ACTUAL < FORECAST (WORSE)'}
                       </div>
                       <div style={{ fontSize: '0.825rem', color: '#f8fafc', marginTop: '0.45rem', lineHeight: 1.5 }}>
-                        {activeAssessment.scenario_worse}
+                        {activeLang === 'vi'
+                          ? (activeAssessment.scenario_worse_vi || activeAssessment.scenario_worse)
+                          : (activeAssessment.scenario_worse_en || activeAssessment.scenario_worse)}
                       </div>
                     </div>
                   </div>
@@ -1034,10 +1129,12 @@ export default function NewsAssessmentTab({ isGuest = false }: NewsAssessmentTab
                     <ShieldAlert size={20} color="#fbbf24" style={{ flexShrink: 0, marginTop: '2px' }} />
                     <div>
                       <div style={{ fontSize: '0.825rem', fontWeight: 800, color: '#fbbf24' }}>
-                        Khuyến Nghị Quản Trị Rủi Ro Cho cBot &amp; Trader
+                        {activeLang === 'vi' ? 'Khuyến Nghị Quản Trị Rủi Ro Cho cBot & Trader' : 'cBot Risk Management & Execution Directives'}
                       </div>
                       <div style={{ fontSize: '0.825rem', color: '#e2e8f0', marginTop: '0.25rem', lineHeight: 1.5 }}>
-                        {activeAssessment.bot_guidance}
+                        {activeLang === 'vi'
+                          ? (activeAssessment.bot_guidance_vi || activeAssessment.bot_guidance)
+                          : (activeAssessment.bot_guidance_en || activeAssessment.bot_guidance)}
                       </div>
                     </div>
                   </div>
@@ -1045,7 +1142,8 @@ export default function NewsAssessmentTab({ isGuest = false }: NewsAssessmentTab
                   {/* In-depth Markdown Analysis */}
                   <div style={{ background: 'rgba(15, 23, 42, 0.8)', border: '1px solid rgba(255, 255, 255, 0.08)', borderRadius: '10px', padding: '1.25rem' }}>
                     <div style={{ fontSize: '0.9rem', fontWeight: 800, color: '#f8fafc', marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
-                      <Bot size={18} color="#38bdf8" /> Báo Cáo Phân Tích Vĩ Mô &amp; SMC Chuyên Sâu
+                      <Bot size={18} color="#38bdf8" />
+                      {activeLang === 'vi' ? 'Báo Cáo Phân Tích Vĩ Mô & SMC Chuyên Sâu' : 'Institutional Macro & SMC Order Flow Report'}
                     </div>
                     <div
                       style={{
@@ -1056,7 +1154,9 @@ export default function NewsAssessmentTab({ isGuest = false }: NewsAssessmentTab
                         fontFamily: 'inherit'
                       }}
                     >
-                      {activeAssessment.analysis_markdown}
+                      {activeLang === 'vi'
+                        ? (activeAssessment.analysis_markdown_vi || activeAssessment.analysis_markdown)
+                        : (activeAssessment.analysis_markdown_en || activeAssessment.analysis_markdown)}
                     </div>
                   </div>
                 </div>

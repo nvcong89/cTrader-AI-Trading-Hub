@@ -93,6 +93,42 @@ Buy-side liquidity resting at 2520. Sell-side liquidity at 2485.
         self.assertIn("2480", parsed["scenario_better"])
         self.assertIn("Detailed Macro & SMC Report", parsed["analysis_markdown"])
 
+    def test_parse_news_ai_response_bilingual(self):
+        llm_bilingual_output = """```json
+{
+  "volatility_level": "EXTREME",
+  "expected_pips_range": "200 - 350 pips",
+  "trend_type": "SWEEP_THEN_TREND",
+  "prob_buy": 65.0,
+  "prob_sell": 35.0,
+  "scenario_better_vi": "Nếu NFP > 200K: USD tăng vọt, Gold giảm sâu test 2470.",
+  "scenario_better_en": "If NFP > 200K: USD surges, Gold dumps to test 2470.",
+  "scenario_worse_vi": "Nếu NFP < 120K: USD lao dốc, Gold bứt phá lên 2540.",
+  "scenario_worse_en": "If NFP < 120K: USD plunges, Gold rallies towards 2540.",
+  "bot_guidance_vi": "Tạm dừng bot trước 30p, chờ quét thanh khoản xong mới vào lệnh.",
+  "bot_guidance_en": "Pause bots 30m prior, wait for Judas swing sweep before entry."
+}
+```
+
+<!-- SECTION_VI -->
+### 🇻🇳 PHÂN TÍCH VĨ MÔ TIẾNG VIỆT
+Dữ liệu việc làm Mỹ tháng này có ý nghĩa quyết định...
+
+<!-- SECTION_EN -->
+### 🇬🇧 INSTITUTIONAL MACRO ANALYSIS ENGLISH
+US labor market dynamics will set the Fed tone...
+"""
+        parsed = news_service.parse_news_ai_response(llm_bilingual_output)
+        self.assertEqual(parsed["volatility_level"], "EXTREME")
+        self.assertEqual(parsed["trend_type"], "SWEEP_THEN_TREND")
+        self.assertEqual(parsed["prob_buy"], 65.0)
+        self.assertIn("USD tăng vọt", parsed["scenario_better_vi"])
+        self.assertIn("USD surges", parsed["scenario_better_en"])
+        self.assertIn("Tạm dừng bot trước 30p", parsed["bot_guidance_vi"])
+        self.assertIn("Pause bots 30m prior", parsed["bot_guidance_en"])
+        self.assertIn("PHÂN TÍCH VĨ MÔ TIẾNG VIỆT", parsed["analysis_markdown_vi"])
+        self.assertIn("INSTITUTIONAL MACRO ANALYSIS ENGLISH", parsed["analysis_markdown_en"])
+
     def test_save_and_retrieve_news_assessment_db(self):
         cluster_hash = "test_cluster_123"
         timestamp_utc = "2026-09-08T12:30:00Z"
@@ -118,7 +154,15 @@ Buy-side liquidity resting at 2520. Sell-side liquidity at 2485.
             ai_provider="qwen_api",
             ai_model="qwen3.7-flash",
             latency_ms=1200,
-            user_notes="Important test"
+            user_notes="Important test",
+            scenario_better_vi="Tăng mạnh",
+            scenario_better_en="Strong surge",
+            scenario_worse_vi="Giảm mạnh",
+            scenario_worse_en="Heavy drop",
+            bot_guidance_vi="Dừng bot 30p",
+            bot_guidance_en="Pause bot 30m",
+            analysis_markdown_vi="## Báo cáo VN",
+            analysis_markdown_en="## Report EN"
         )
         self.assertIsInstance(rec_id, int)
         self.assertGreater(rec_id, 0)
@@ -129,11 +173,18 @@ Buy-side liquidity resting at 2520. Sell-side liquidity at 2485.
         self.assertEqual(retrieved["volatility_level"], "HIGH")
         self.assertEqual(retrieved["prob_buy"], 70.0)
         self.assertEqual(retrieved["user_notes"], "Important test")
+        self.assertEqual(retrieved["scenario_better_vi"], "Tăng mạnh")
+        self.assertEqual(retrieved["scenario_better_en"], "Strong surge")
+        self.assertEqual(retrieved["analysis_markdown_vi"], "## Báo cáo VN")
+        self.assertEqual(retrieved["analysis_markdown_en"], "## Report EN")
 
         # Retrieve by id
         retrieved_id = database.get_news_assessment_by_id(rec_id)
         self.assertIsNotNone(retrieved_id)
         self.assertEqual(retrieved_id["id"], rec_id)
+        self.assertEqual(retrieved_id["bot_guidance_vi"], "Dừng bot 30p")
+        self.assertEqual(retrieved_id["bot_guidance_en"], "Pause bot 30m")
 
 if __name__ == "__main__":
     unittest.main()
+
